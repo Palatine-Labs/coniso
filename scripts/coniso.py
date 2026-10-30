@@ -19,7 +19,7 @@ import tempfile
 import time
 from pathlib import Path
 
-VERSION = "1.0.0"
+VERSION = "1.0.1"
 STATES = ["queued", "building", "built", "reviewing", "passed", "failed",
           "conflict", "merged", "blocked", "dropped"]
 ACTIVE = {"building", "built", "reviewing", "passed", "failed", "conflict"}
@@ -625,7 +625,7 @@ def cmd_init(a):
     if stack:
         print(f"Stack: {stack} · checks after build/test: {conf.get('stack_check_cmd') or 'none'}")
     print("Brief: .coniso/BRIEF.md (fill the TBD sections before the first schedule)")
-    configure_claude_settings(read_json(L / "config.json", conf) or conf, a)
+    print_permissions(read_json(L / "config.json", conf) or conf)
 
 
 SPAWN_DEPTH = "CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH"
@@ -650,47 +650,102 @@ def env_problems():
     return fixes
 
 
-def configure_claude_settings(conf, a):
-    """Zero-touch onboarding: allow Coniso's own commands in the project's local Claude Code settings, and override
-    only environment values that are known to break nesting. Nothing experimental is switched on."""
-    rules = [f"Bash({conf['cmd']}:*)"] + [f"Bash({conf[k]}:*)" for k in ("build_cmd", "test_cmd") if conf.get(k)]
-    if getattr(a, "no_claude_settings", False):
-        print("Claude settings left alone (--no-claude-settings). Add these allow rules yourself so agents never prompt:")
-        for r in rules:
-            print(f"  {r}")
+SETTINGS_FILE = ".claude/settings.local.json"
+
+
+def wanted_rules(conf):
+    return [f"Bash({conf['cmd']}:*)"] + [f"Bash({conf[k]}:*)" for k in ("build_cmd", "test_cmd") if conf.get(k)]
+
+
+def permission_state(conf):
+    """(missing allow rules, pending env fixes, whether Coniso set acceptEdits) against the local settings file."""
+    data = local_settings()
+    allow = (data.get("permissions") or {}).get("allow") or []
+    env = data.get("env") or {}
+    missing = [r for r in wanted_rules(conf) if r not in allow]
+    pending = {k: v for k, v in env_problems().items() if env.get(k) != v}
+    return missing, pending, (data.get("permissions") or {}).get("defaultMode") == "acceptEdits"
+
+
+def print_permissions(conf):
+    """Init and `permissions` without flags: report only. Coniso never edits Claude settings without an explicit opt-in."""
+    missing, pending, accept = permission_state(conf)
+    granted = (conf.get("permissions") or {})
+    if not missing and not pending:
+        print(f"Permissions: Coniso commands allowed in {SETTINGS_FILE}" + (" · default mode acceptEdits" if accept else ""))
+        return
+    if granted.get("declined"):
+        print("Permissions: not configured (user declined); agents may stop on permission prompts.")
+        return
+    print(f"PERMISSIONS NOT CONFIGURED. Coniso changes no Claude settings unless the user opts in. Ask the user; on yes run "
+          f"`permissions --write`, on no run `permissions --decline`. It would add to {SETTINGS_FILE} (local, git-excluded):")
+    for r in missing:
+        print(f"  allow {r}")
+    for k, v in pending.items():
+        print(f"  env {k}={v}  (current value breaks nested subagents)")
+
+
+def cmd_permissions(a):
+    """Show, grant (--write [--accept-edits]), decline or remove Coniso's entries in the local Claude settings."""
+    conf = cfg()
+    if a.decline:
+        conf["permissions"] = {"declined": True}
+        write_json(L / "config.json", conf)
+        print("Permissions: declined; Coniso won't ask again. Grant later with `permissions --write`.")
+        return
+    if not (a.write or a.accept_edits or a.remove):
+        print_permissions(conf)
         return
     path = ROOT / ".claude" / "settings.local.json"
     try:
         data = read_json(path, {}) or {}
     except ValueError:
-        print(f"WARN: {p(path)} is not valid JSON; left alone. Add these allow rules yourself: {', '.join(rules)}")
-        return
+        die(f"{p(path)} is not valid JSON; fix or remove it first")
     perms = data.setdefault("permissions", {})
     allow = perms.setdefault("allow", [])
-    added = [r for r in rules if r not in allow]
-    allow.extend(added)
     env = data.get("env") or {}
+    record = conf.get("permissions") or {}
+    record.pop("declined", None)
+    if a.remove:
+        rules = record.get("rules", [])
+        perms["allow"] = [r for r in allow if r not in rules]
+        for k, v in (record.get("env") or {}).items():
+            if env.get(k) == v:
+                env.pop(k)
+        if record.get("accept_edits") and perms.get("defaultMode") == "acceptEdits":
+            perms.pop("defaultMode")
+        data["env"] = env
+        if not env:
+            data.pop("env")
+        if not perms["allow"]:
+            perms.pop("allow")
+        if not perms:
+            data.pop("permissions")
+        write_json(path, data)
+        conf["permissions"] = {}
+        write_json(L / "config.json", conf)
+        print(f"Permissions: removed Coniso's entries from {SETTINGS_FILE} ({len(rules)} rule(s)"
+              + (", env overrides" if record.get("env") else "") + (", acceptEdits" if record.get("accept_edits") else "") + ")")
+        return
+    added = [r for r in wanted_rules(conf) if r not in allow]
+    allow.extend(added)
     fixed = {k: v for k, v in env_problems().items() if env.get(k) != v}
     env.update(fixed)
     if env:
         data["env"] = env
-    mode = None
-    if getattr(a, "accept_edits", False) and perms.get("defaultMode") != "acceptEdits":
-        perms["defaultMode"] = mode = "acceptEdits"
-    if not (added or fixed or mode):
-        print("Claude settings: already configured (.claude/settings.local.json)")
-        return
+    if a.accept_edits and perms.get("defaultMode") != "acceptEdits":
+        perms["defaultMode"] = "acceptEdits"
+        record["accept_edits"] = True
+    record["rules"] = sorted(set(record.get("rules", [])) | set(added))
+    record["env"] = {**(record.get("env") or {}), **fixed}
     path.parent.mkdir(parents=True, exist_ok=True)
     write_json(path, data)
     exclude_path("/.claude/settings.local.json")
-    parts = []
-    if added:
-        parts.append(f"{len(added)} allow rule(s) for Coniso, build and test")
-    if fixed:
-        parts.append("env " + ", ".join(f"{k}={v}" for k, v in fixed.items()))
-    if mode:
-        parts.append("default mode acceptEdits")
-    print(f"Claude settings: wrote .claude/settings.local.json ({'; '.join(parts)}). Local to you, never committed.")
+    conf["permissions"] = record
+    write_json(L / "config.json", conf)
+    parts = [f"{len(added)} allow rule(s)"] + (["env " + ", ".join(f"{k}={v}" for k, v in fixed.items())] if fixed else []) \
+        + (["default mode acceptEdits"] if a.accept_edits else [])
+    print(f"Permissions: wrote {SETTINGS_FILE} ({'; '.join(parts)}). Local, never committed. Undo with `permissions --remove`.")
     if fixed:
         print("  Env overrides apply to sessions started after this one; this session runs in relay mode if nesting is off.")
 
@@ -752,13 +807,15 @@ def cmd_preflight(a):
     if fixes:
         local = local_settings()
         pending = {k: v for k, v in fixes.items() if (local.get("env") or {}).get(k) != v}
-        line("INFO", "init already wrote the env fix to .claude/settings.local.json; it applies from the next session"
-             if not pending else "re-run init to write the env fix to .claude/settings.local.json (applies from the next session)")
-    allow = (local_settings().get("permissions") or {}).get("allow") or []
-    if f"Bash({conf['cmd']}:*)" in allow:
-        line("OK", "Claude settings: Coniso commands allowed (.claude/settings.local.json)")
+        line("INFO", f"the env fix is in {SETTINGS_FILE}; it applies from the next session"
+             if not pending else "env fix needed for nested subagents: see `permissions` (opt-in)")
+    missing, _, _ = permission_state(conf)
+    if not missing:
+        line("OK", f"Claude settings: Coniso commands allowed ({SETTINGS_FILE})")
+    elif (conf.get("permissions") or {}).get("declined"):
+        line("INFO", "Coniso commands not allowed (user declined); agents may stop on permission prompts")
     else:
-        line("WARN", f"Coniso commands not in the project allow list; agents may stop on prompts. Re-run init, or allow Bash({conf['cmd']}:*)")
+        line("WARN", "PERMISSIONS NOT CONFIGURED: agents may stop on prompts. Ask the user, then `permissions --write` or `permissions --decline`")
     c = load_sprint(required=False)
     if c:
         live = [tid for tid, t in c["tickets"].items() if t["state"] in ACTIVE]
@@ -1856,9 +1913,7 @@ def main():
     s.add_argument("--slots", type=int)
     s.add_argument("--stack", help="stack pack from the plugin's stacks/ folder, or 'none'")
     s.add_argument("--no-claude-settings", dest="no_claude_settings", action="store_true",
-                   help="don't write .claude/settings.local.json (print the allow rules instead)")
-    s.add_argument("--accept-edits", dest="accept_edits", action="store_true",
-                   help="also set acceptEdits as this project's default permission mode, for unattended sprints")
+                   help=argparse.SUPPRESS)  # pre-1.0.1 flag; init never writes Claude settings now
     g = s.add_mutually_exclusive_group()
     g.add_argument("--no-worktrees", dest="no_worktrees", action="store_true", default=None)
     g.add_argument("--worktrees", dest="no_worktrees", action="store_false")
@@ -1961,6 +2016,15 @@ def main():
     s.add_argument("--no-commit", action="store_true")
     s.add_argument("--force", action="store_true")
     s.set_defaults(fn=cmd_roadmap_sync)
+
+    s = sp.add_parser("permissions", help="show, grant, decline or remove Coniso's entries in .claude/settings.local.json")
+    g = s.add_mutually_exclusive_group()
+    g.add_argument("--write", action="store_true", help="add allow rules for Coniso, build and test (and nesting env fixes if needed)")
+    g.add_argument("--decline", action="store_true", help="record that the user declined; stop asking")
+    g.add_argument("--remove", action="store_true", help="remove everything Coniso added")
+    s.add_argument("--accept-edits", dest="accept_edits", action="store_true",
+                   help="also set acceptEdits as this project's default permission mode (unattended sprints)")
+    s.set_defaults(fn=cmd_permissions)
 
     s = sp.add_parser("retro")
     s.set_defaults(fn=cmd_retro)

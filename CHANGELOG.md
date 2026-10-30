@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-10-30
+
+### Changed
+- **Permissions are now opt-in.** `init` no longer writes `.claude/settings.local.json`. It reports the allow rules (and any nesting env fix) it would add, and Claude asks you before anything is written.
+- `init --accept-edits` moved to `permissions --accept-edits`, a separate opt-in. `init --no-claude-settings` is still accepted but no longer needed.
+
+### Added
+- `permissions` command: show status, `--write`, `--accept-edits`, `--decline` (stop asking), and `--remove`, which undoes exactly what Coniso added and keeps your own entries.
+- README: a "Claude Code only" notice, a Permissions section, a list of everything Coniso runs and touches, and a note about not installing from both the marketplace and Anthropic's directory.
+
 ## [1.0.0] - 2026-10-30
 
 First public release.
@@ -41,5 +51,6 @@ First public release.
 - **Engineer specialties.** builder, tester, ui, net, level, audio, docs, batch, artisan and synth, plus forging new specialties and a lessons loop (`docs/agent-feedback/`).
 - **Stack-pack mechanism** (`init --stack <name>`) for project-specific rules, specialties, checks, review lens and proving pass. No packs ship in 1.0.0.
 
-[Unreleased]: https://github.com/Palatine-Labs/coniso/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/Palatine-Labs/coniso/compare/v1.0.1...HEAD
+[1.0.1]: https://github.com/Palatine-Labs/coniso/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/Palatine-Labs/coniso/releases/tag/v1.0.0

@@ -8,6 +8,8 @@ by **Palatine Labs** · pronounced *CON-ih-so* (short for **con**text **iso**lat
 
 **Status: v1.0.** The core is stable and in daily use. Expect sharp edges on uncommon setups. Please report them as [issues](https://github.com/Palatine-Labs/coniso/issues).
 
+**Claude Code only.** Coniso runs a local Python script, git worktrees and nested subagents, so it needs Claude Code: the terminal, an IDE extension, or the desktop app's Code tab. In claude.ai chat it installs but has nothing to run on. Cowork is untested.
+
 ---
 
 ## The problem
@@ -62,6 +64,8 @@ claude plugin marketplace add Palatine-Labs/coniso
 claude plugin install coniso@coniso
 ```
 
+Install it from one source only. A copy added from Anthropic's directory on claude.ai appears in Claude Code as `coniso@synced`; if you also install `coniso@coniso`, disable one of them.
+
 ### Requirements
 
 - **Claude Code** with plugin support and nested subagents. Developed and tested on **v2.1.292**. Older 2.1.x releases may work but aren't tested.
@@ -71,10 +75,10 @@ claude plugin install coniso@coniso
 
 ### Experimental flags
 
-**None required.** Coniso runs on Claude Code's defaults. On first use, `init` checks two settings that would break nesting, and writes an override to your local, never-committed `.claude/settings.local.json` only if it finds one:
+**None required.** Coniso runs on Claude Code's defaults. Two existing values would break nesting, and Coniso offers to fix them (see [Permissions](#permissions)):
 
-- `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH` below 3: set to 3.
-- `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`: set to 0. Coniso uses its own hierarchy, not experimental agent teams.
+- `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH` below 3: fix sets it to 3.
+- `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`: fix sets it to 0. Coniso uses its own hierarchy, not experimental agent teams.
 
 If nested spawning isn't available at all, leaders switch to **relay mode** on their own: they write spawn requests and the main session spawns for them. Sprints keep working; only parallelism drops. `preflight` (run on every call) reports which mode you're in.
 
@@ -101,7 +105,26 @@ If nested spawning isn't available at all, leaders switch to **relay mode** on t
 The first call runs `init`, which:
 - installs `.coniso/` and git-excludes it;
 - finds your roadmap and your build and test commands;
-- writes local allow rules so agents don't stall on permission prompts.
+- reports which permission rules would stop agents stalling on prompts. Claude then asks whether to add them (below).
+
+## Permissions
+
+**Coniso never changes your Claude Code settings without your yes.** On the first call, Claude shows you exactly what it would add to `.claude/settings.local.json` and asks:
+
+- **allow rules** for the Coniso script and your build and test commands, so agents don't stop on every prompt;
+- **an env fix**, only if one of your current values breaks nested subagents (see above).
+
+Say yes and it runs `permissions --write`. Say no and it records that and stops asking; Coniso still works, but agents may pause for approval. That file is local to you and git-excluded.
+
+You can change your mind at any time, by asking Claude or running the script yourself:
+
+| Command | What it does |
+|---|---|
+| `python .coniso/coniso.py permissions` | Show what's allowed and what's missing |
+| `python .coniso/coniso.py permissions --write` | Add the allow rules (and any needed env fix) |
+| `python .coniso/coniso.py permissions --accept-edits` | Also make accept-edits the project's default mode, for unattended sprints. Always a separate opt-in |
+| `python .coniso/coniso.py permissions --decline` | Stop asking |
+| `python .coniso/coniso.py permissions --remove` | Remove everything Coniso added |
 
 Natural language works too ("call a lead on P2-04", "run a sprint on phase 2").
 
@@ -132,7 +155,7 @@ Being straight about this:
   - Prefer `/coniso:lead` for single tickets over a full sprint.
   - When cost has to drop, Coniso cuts breadth (fewer concurrent units) before it ever cuts review.
 - **Idle cost is small:** about 600 tokens per session while installed, whether or not you use it.
-- **Rule of thumb:** use Coniso on a usage-based plan with headroom or an API budget you've set limits on. Watch your first sprint's usage before running unattended (`init --accept-edits`).
+- **Rule of thumb:** use Coniso on a usage-based plan with headroom or an API budget you've set limits on. Watch your first sprint's usage before running unattended (`permissions --accept-edits`).
 
 ## Commands
 
@@ -152,7 +175,8 @@ Being straight about this:
 
 | Command | Purpose |
 |---|---|
-| `init [--accept-edits] [--no-claude-settings] [--stack <pack>\|none]`, `preflight` | Install or refresh, including project permissions; check git state, roadmap validity, nesting mode and settings |
+| `init [--stack <pack>\|none]`, `preflight` | Install or refresh; check git state, roadmap validity, nesting mode and permissions |
+| `permissions [--write [--accept-edits] \| --decline \| --remove]` | Show, grant, decline or undo Coniso's entries in `.claude/settings.local.json` |
 | `schedule [--phase P] [--tickets ids] [--limit N] [--add] [--formation managed\|direct]` | Plan a sprint |
 | `validate-plan <table> [--slots N] [--no-files]` | Check a delegation plan: one owner per file per step, complete assignment files, slot limits |
 | `adhoc <id> --title … [--size] [--model] [--accept …] [--prompt-file]` | Add a non-roadmap ticket |
@@ -178,6 +202,7 @@ Being straight about this:
 ## Guarantees and notes
 
 - **Nothing is ever pushed.** Coniso never marks roadmap tickets done and never stashes or touches your uncommitted work.
+- **What it runs and touches:** your build and test commands, git (worktrees, branches, squash merges on your current branch), and its own files under `.coniso/` and `.git/info/exclude`. With your yes, it edits `.claude/settings.local.json`. Agents' own web lookups (scouts) go through Claude Code's tools. Coniso sends nothing anywhere itself.
 - **The merge gate can't be talked past.** Each merge squashes the ticket, runs build and tests on the integrated result, and resets main untouched if anything fails or conflicts.
 - Worktrees live in `.coniso/wt/`. If a tool in your repo scans dot-folders (some eslint or jest setups), add `.coniso` to its ignore list.
 - Leave the main checkout alone during a sprint: merges need it clean.

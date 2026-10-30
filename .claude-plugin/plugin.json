@@ -1,7 +1,7 @@
 {
   "name": "coniso",
   "displayName": "Coniso",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Context-isolated agent teams for Claude Code. Call a role (engineer, lead, manager, review lead, director) and it brings its team: a worktree per ticket, adversarial reviewers and auditors, deterministic scheduling and merges, and an HTML prompt roadmap, built to keep each agent's context and the session's token use small.",
   "author": {
     "name": "Palatine Labs",

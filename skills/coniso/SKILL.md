@@ -29,10 +29,11 @@ Builders never judge their own work. Finished tickets go to reviewers, which the
 
 ## Setup (once per session, every call)
 
-1. If `.coniso/config.json` is missing, or `.coniso/VERSION` differs from 1.0.0, initialise from the repo root:
-   `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/coniso.py" init --roadmap <docs/roadmap/X.html> --test "<test cmd>" [--build "<cmd>"] [--setup "<cmd per new worktree>"] [--link node_modules] [--copy .env.local] [--stack <pack>|none] [--accept-edits] [--no-claude-settings]`
+1. If `.coniso/config.json` is missing, or `.coniso/VERSION` differs from 1.0.1, initialise from the repo root:
+   `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/coniso.py" init --roadmap <docs/roadmap/X.html> --test "<test cmd>" [--build "<cmd>"] [--setup "<cmd per new worktree>"] [--link node_modules] [--copy .env.local] [--stack <pack>|none]`
    - Use `python` or `py -3` if `python3` is missing.
-   - Init writes `.claude/settings.local.json` (local, never committed) with allow rules for the Coniso script and the build and test commands, and env overrides only if it finds spawn depth below 3 or experimental agent teams switched on. Don't ask the user to edit settings or set flags by hand. Pass `--accept-edits` when the user wants unattended sprints.
+   - **Permissions are opt-in.** Init never edits Claude settings. When it (or preflight) prints `PERMISSIONS NOT CONFIGURED`, ask the user once, in one message: list exactly what it would add to `.claude/settings.local.json` (local, git-excluded): the allow rules, and any env fix it names. On yes run `CONISO permissions --write`; on no run `CONISO permissions --decline` and carry on (agents may hit prompts). Never write or edit the settings file yourself.
+   - **Unattended sprints:** only when the user asks for them, ask separately before running `CONISO permissions --accept-edits` (sets acceptEdits as the project's default mode). `CONISO permissions --remove` undoes everything Coniso added.
    - **Stacks.** `--stack <name>` installs a stack pack from the plugin's `stacks/` folder: rules added to the brief, extra specialties in `.coniso/specialties/`, an optional check command run after build and test, an optional review lens and proving pass. Coniso 1.0 ships no packs; the mechanism is there for your own (see README → Stack packs).
    - Init finds the roadmap itself when the repo has exactly one. Find the test command in the repo (CLAUDE.md, package.json, *.csproj). Ask the user only if it isn't there.
    - **No roadmap yet?** Fine for one-off lead or engineer calls (they become adhoc tickets). For a sprint, offer to create one first (`roadmap.md` → Creating a roadmap).
