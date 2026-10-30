@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `PRIVACY.md` privacy policy, linked from `plugin.json` (`privacyPolicyUrl`) and the README.
+
 ## [1.0.1] - 2026-10-30
 
 ### Changed

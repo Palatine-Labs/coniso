@@ -10,6 +10,7 @@
   "homepage": "https://github.com/Palatine-Labs/coniso",
   "repository": "https://github.com/Palatine-Labs/coniso",
   "license": "Apache-2.0",
+  "privacyPolicyUrl": "https://github.com/Palatine-Labs/coniso/blob/main/PRIVACY.md",
   "keywords": [
     "multi-agent",
     "orchestration",

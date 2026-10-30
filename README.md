@@ -212,6 +212,7 @@ Being straight about this:
 
 - Contributions: see [CONTRIBUTING.md](CONTRIBUTING.md).
 - Vulnerabilities: report privately per [SECURITY.md](SECURITY.md). Please don't use public issues.
+- Privacy: Coniso collects and sends nothing. See [PRIVACY.md](PRIVACY.md).
 
 ## License
 
