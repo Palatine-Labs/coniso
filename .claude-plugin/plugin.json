@@ -1,0 +1,22 @@
+{
+  "name": "coniso",
+  "displayName": "Coniso",
+  "version": "1.0.0",
+  "description": "Context-isolated agent teams for Claude Code. Call a role (engineer, lead, manager, review lead, director) and it brings its team: a worktree per ticket, adversarial reviewers and auditors, deterministic scheduling and merges, and an HTML prompt roadmap, built to keep each agent's context and the session's token use small.",
+  "author": {
+    "name": "Palatine Labs",
+    "url": "https://github.com/Palatine-Labs"
+  },
+  "homepage": "https://github.com/Palatine-Labs/coniso",
+  "repository": "https://github.com/Palatine-Labs/coniso",
+  "license": "Apache-2.0",
+  "keywords": [
+    "multi-agent",
+    "orchestration",
+    "context-management",
+    "subagents",
+    "git-worktrees",
+    "code-review",
+    "roadmap"
+  ]
+}

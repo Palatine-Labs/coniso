@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Roadmap</title>
+<style>
+:root{--bg:#f6f7f9;--panel:#fff;--ink:#1d2330;--muted:#5d6678;--line:#e1e5ec;--accent:#3a5bd9;--accent-ink:#fff;
+--todo:#8a93a6;--progress:#d08a12;--review:#7a4fd1;--done:#2f9e58;--blocked:#d23c3c;--code:#eef1f6;--shadow:0 1px 2px rgba(20,30,50,.06)}
+@media (prefers-color-scheme:dark){:root{--bg:#12151c;--panel:#1a1f29;--ink:#e6e9ef;--muted:#9aa3b5;--line:#2a313e;--accent:#7b97ff;--accent-ink:#0d1220;
+--code:#232a37;--shadow:none}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+header{position:sticky;top:0;z-index:5;background:var(--panel);border-bottom:1px solid var(--line);box-shadow:var(--shadow)}
+.wrap{max-width:1080px;margin:0 auto;padding:0 16px}
+.top{display:flex;flex-wrap:wrap;align-items:center;gap:8px 16px;padding:12px 0}
+.top h1{font-size:18px;margin:0;flex:1 1 260px}
+.top h1 small{display:block;font-weight:400;color:var(--muted);font-size:13px}
+.actions{display:flex;flex-wrap:wrap;gap:6px}
+button,.btn{font:inherit;font-size:13px;border:1px solid var(--line);background:var(--panel);color:var(--ink);border-radius:7px;padding:5px 10px;cursor:pointer}
+button:hover{border-color:var(--accent)}
+button.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+nav{display:flex;gap:4px;overflow-x:auto;padding-bottom:8px}
+nav a{color:var(--muted);text-decoration:none;font-size:13px;padding:4px 10px;border-radius:999px;white-space:nowrap}
+nav a:hover{background:var(--code);color:var(--ink)}
+main{padding:16px 0 80px}
+section{margin:0 0 28px}
+section,.phase,.ticket{scroll-margin-top:120px}
+h2{font-size:16px;margin:0 0 10px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;box-shadow:var(--shadow)}
+.pad{padding:12px 14px}
+.muted{color:var(--muted)}
+.summary{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.bar{height:8px;flex:1 1 200px;border-radius:99px;overflow:hidden;display:flex;background:var(--code)}
+.bar span{display:block;height:100%}
+.pill{display:inline-flex;align-items:center;gap:5px;font-size:12px;padding:1px 8px;border-radius:999px;border:1px solid var(--line);white-space:nowrap}
+.dot{width:8px;height:8px;border-radius:50%;display:inline-block}
+.s-todo{background:var(--todo)}.s-progress{background:var(--progress)}.s-review{background:var(--review)}.s-done{background:var(--done)}.s-blocked{background:var(--blocked)}
+.phase{margin-bottom:14px}
+.phase>summary{list-style:none;cursor:pointer;padding:12px 14px;display:flex;flex-wrap:wrap;gap:6px 12px;align-items:center}
+.phase>summary::-webkit-details-marker{display:none}
+.phase>summary h3{margin:0;font-size:15px;flex:1 1 220px}
+.phase .body{border-top:1px solid var(--line);padding:10px 14px 14px}
+.gate{border-left:3px solid var(--review);padding:4px 10px;margin:6px 0 10px;background:var(--code);border-radius:4px;font-size:14px}
+.ticket{border:1px solid var(--line);border-radius:8px;margin:8px 0;background:var(--panel)}
+.ticket>summary{list-style:none;cursor:pointer;display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;padding:8px 10px}
+.ticket>summary::-webkit-details-marker{display:none}
+.ticket .tid{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;color:var(--muted);min-width:52px}
+.ticket .ttl{flex:1 1 240px;font-weight:600}
+.ticket .tb{border-top:1px solid var(--line);padding:10px 12px 12px}
+.ticket.local{box-shadow:inset 3px 0 0 var(--progress)}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+@media (max-width:720px){.grid{grid-template-columns:1fr}}
+label{font-size:13px}
+select,textarea,input[type=text]{font:inherit;font-size:14px;background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:5px 7px}
+textarea{width:100%;min-height:70px;resize:vertical}
+ul{margin:4px 0 8px;padding-left:20px}
+.checks li{list-style:none;margin-left:-20px}
+.checks input{margin-right:6px}
+code{background:var(--code);border-radius:4px;padding:0 4px;font-size:.92em;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.row{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:8px}
+.kv{font-size:13px;color:var(--muted)}
+.list li{margin:3px 0}
+.log li{margin:4px 0}
+.toast{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:8px 14px;border-radius:8px;font-size:14px;opacity:0;transition:opacity .2s;pointer-events:none;z-index:20}
+.toast.on{opacity:1}
+.filters{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:10px}
+.filters input{flex:1 1 200px}
+.hide{display:none!important}
+.empty{padding:14px;color:var(--muted)}
+</style>
+</head>
+<body>
+<script type="application/json" id="roadmap-data">
+{
+ "meta": {
+  "id": "new-roadmap",
+  "title": "New project",
+  "product": "",
+  "owner": "",
+  "licensee": "",
+  "filename": "Project-Roadmap.html",
+  "revision": 1,
+  "created": "2026-01-01T00:00:00Z",
+  "updated": "2026-01-01T00:00:00Z",
+  "summary": "",
+  "howto": [
+   "Open a ticket to see why it matters, what it covers and how you'll know it's done.",
+   "**Copy prompt** gives a ready-to-paste prompt for a fresh Claude Code session. **Copy Coniso command** runs it with Coniso instead (`/coniso:lead <id>`, or `/coniso:director <phase>` for a whole phase).",
+   "Your clicks (status, checkboxes, notes, log) are kept in this browser. Press **Save updated file** and replace the roadmap file in the repo so Claude and Coniso see them, or press **Copy status for Claude** and paste it into a session.",
+   "Coniso moves tickets to `review` after merging. You mark them `done` after checking the done-when items yourself."
+  ],
+  "preamble": "",
+  "modelNote": "Pick the cheapest model that does the job well: opus for load-bearing work, sonnet for well-specified work, haiku for mechanical changes.",
+  "effortNote": "Effort is Claude Code's /effort setting. medium is the default; raise it only where mistakes would be costly or hard to spot.",
+  "reviewPrompt": "Review ticket {id} ({title}) as a fresh, skeptical reviewer. Read the changes made for {id}, check every done-when item with evidence (a test, a file:line or a reproduction), and run the tests. Report blockers, majors and minors with file:line. Do not fix anything yourself."
+ },
+ "models": [
+  {"key": "opus", "name": "Claude Opus", "short": "Opus", "when": "Load-bearing work: new architecture, data models, engine core, the first of a kind that later tickets copy, hard stateful logic, security, gate reviews."},
+  {"key": "sonnet", "name": "Claude Sonnet", "short": "Sonnet", "when": "Well-specified work that follows an existing pattern or a written spec: screens, forms, CRUD, follow-on features, tests for stated criteria."},
+  {"key": "haiku", "name": "Claude Haiku", "short": "Haiku", "when": "Small mechanical changes with nothing to decide: renames, config tweaks, an extra export over existing data."}
+ ],
+ "efforts": [
+  {"key": "low", "when": "A small change you check right away."},
+  {"key": "medium", "when": "Default. Clear-scope features you can verify by clicking through, or where tests already catch mistakes."},
+  {"key": "high", "when": "Correctness matters or edge cases are likely: math, parsing, scale, data safety, performance-critical paths, gate reviews."},
+  {"key": "xhigh", "when": "Opus only, about one ticket in seven: load-bearing designs that are expensive to change, the hardest stateful logic, security-sensitive work."}
+ ],
+ "phases": [],
+ "tickets": [],
+ "decisions": [],
+ "open": [],
+ "later": [],
+ "log": []
+}
+</script>
+
+<header><div class="wrap">
+ <div class="top">
+  <h1 id="h-title">Roadmap<small id="h-sub"></small></h1>
+  <div class="actions">
+   <button class="primary" id="b-save" title="Download the roadmap with your browser changes included; replace the file in the repo with it">Save updated file</button>
+   <button id="b-status" title="Copy a summary of your browser-only changes to paste into Claude">Copy status for Claude</button>
+   <button id="b-log" title="Add a dated log entry">Add log entry</button>
+   <button id="b-reset" title="Forget this browser's changes and show the file as saved">Reset browser copy</button>
+  </div>
+ </div>
+ <nav id="nav"></nav>
+</div></header>
+
+<main class="wrap" id="app"></main>
+<div class="toast" id="toast"></div>
+
+<script>
+(function () {
+"use strict";
+const STATUSES = ["todo", "progress", "review", "done", "blocked"];
+const LABEL = {todo: "To do", progress: "In progress", review: "Review", done: "Done", blocked: "Blocked"};
+const SRC = document.getElementById("roadmap-data");
+const FILE = JSON.parse(SRC.textContent);
+const KEY = "coniso-roadmap:" + (FILE.meta && (FILE.meta.id || FILE.meta.title) || location.pathname);
+const $ = (s, r) => (r || document).querySelector(s);
+const nowZ = () => new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+
+function esc(s) {
+  return String(s == null ? "" : s).replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+}
+function fmt(s) {  // inline formatting: `code` and **bold** only
+  return esc(s).replace(/`([^`]+)`/g, "<code>$1</code>").replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+}
+function readLocal() {
+  try { const v = JSON.parse(localStorage.getItem(KEY) || "null"); return v && v.tickets ? v : {tickets: {}, log: []}; }
+  catch (e) { return {tickets: {}, log: []}; }
+}
+function writeLocal() {
+  try { localStorage.setItem(KEY, JSON.stringify(local)); } catch (e) { /* private window: changes last until reload */ }
+}
+function fitChecks(t) {
+  const n = (t.accept || []).length;
+  const c = Array.isArray(t.checks) ? t.checks.slice(0, n) : [];
+  while (c.length < n) c.push(false);
+  t.checks = c.map(Boolean);
+}
+
+// ---- merge: the browser copy wins per ticket only when newer than the file's `updated`
+let local = readLocal();
+const data = JSON.parse(JSON.stringify(FILE));
+const byId = {};
+let pruned = false;
+for (const t of data.tickets || []) {
+  fitChecks(t);
+  byId[t.id] = t;
+  const lt = local.tickets[t.id];
+  if (lt && lt.updated && (!t.updated || lt.updated > t.updated)) {
+    t.status = lt.status; t.notes = lt.notes; t.checks = lt.checks; t.updated = lt.updated; t._local = true;
+    fitChecks(t);
+  } else if (lt) { delete local.tickets[t.id]; pruned = true; }
+}
+const fileLogIds = new Set((data.log || []).map(l => l.id));
+const pendingLog = (local.log || []).filter(l => !fileLogIds.has(l.id));
+if (pendingLog.length !== (local.log || []).length) { local.log = pendingLog; pruned = true; }
+data.log = (data.log || []).concat(pendingLog.map(l => Object.assign({_local: true}, l)));
+if (pruned) writeLocal();
+
+function touch(t) {
+  t.updated = nowZ(); t._local = true;
+  local.tickets[t.id] = {status: t.status, notes: t.notes || "", checks: t.checks.slice(), updated: t.updated};
+  writeLocal();
+}
+
+// ---- helpers
+const models = {}; (data.models || []).forEach(m => models[m.key] = m);
+const efforts = {}; (data.efforts || []).forEach(e => efforts[e.key] = e);
+const isGate = t => /\bgate\b/i.test(t.title || "");
+const depsMet = t => (t.deps || []).every(d => byId[d] && (byId[d].status === "done" || byId[d].status === "review"));
+function toast(msg) { const el = $("#toast"); el.textContent = msg; el.classList.add("on"); clearTimeout(toast._t); toast._t = setTimeout(() => el.classList.remove("on"), 1800); }
+function copy(text, what) {
+  const done = () => toast((what || "Copied") + " ✓");
+  if (navigator.clipboard && window.isSecureContext !== false) {
+    navigator.clipboard.writeText(text).then(done, () => fallback());
+  } else fallback();
+  function fallback() {
+    const ta = document.createElement("textarea"); ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+    document.body.appendChild(ta); ta.select();
+    try { document.execCommand("copy"); done(); } catch (e) { toast("Copy failed — select the text manually"); }
+    ta.remove();
+  }
+}
+function promptFor(t) {
+  const parts = [];
+  if ((data.meta.preamble || "").trim()) parts.push(data.meta.preamble.trim());
+  parts.push(`## Ticket ${t.id} — ${t.title}`);
+  if ((t.prompt || "").trim()) parts.push(t.prompt.trim());
+  if ((t.accept || []).length) parts.push("Done when:\n" + t.accept.map(a => "- " + a).join("\n"));
+  return parts.join("\n\n");
+}
+function reviewFor(t) {
+  return (data.meta.reviewPrompt || "Review ticket {id} ({title}).").replace(/\{id\}/g, t.id).replace(/\{title\}/g, t.title);
+}
+function counts(list) { const c = {}; STATUSES.forEach(s => c[s] = 0); list.forEach(t => c[t.status] = (c[t.status] || 0) + 1); return c; }
+function barHTML(c, total) {
+  return '<div class="bar" title="' + STATUSES.map(s => LABEL[s] + " " + c[s]).join(" · ") + '">' +
+    STATUSES.map(s => c[s] ? `<span class="s-${s}" style="width:${(100 * c[s] / total).toFixed(2)}%"></span>` : "").join("") + "</div>";
+}
+function chips(t) {
+  const m = models[t.model]; const out = [];
+  out.push(`<span class="pill" title="Size: S 1–2 h, M 2–5 h, L 5–10 h">${esc(t.size || "?")}</span>`);
+  out.push(`<span class="pill" title="${esc(t.modelWhy || "")}">${esc(m ? (m.short || m.name) : t.model)}${t.effort ? " · " + esc(t.effort) : ""}</span>`);
+  if (t.review) out.push('<span class="pill" title="Gets a fresh-session review">review</span>');
+  if (isGate(t)) out.push('<span class="pill">gate</span>');
+  return out.join(" ");
+}
+
+// ---- rendering
+function ticketHTML(t, anchor) {
+  const deps = (t.deps || []).map(d => `<a href="#t-${esc(d)}" class="dep">${esc(d)}</a>` + (byId[d] ? ` <span class="dot s-${byId[d].status}"></span>` : "")).join(", ");
+  const nid = esc(t.id) + (anchor ? "" : "-q");
+  return `<details class="ticket${t._local ? " local" : ""}"${anchor ? ` id="t-${esc(t.id)}"` : ""} data-id="${esc(t.id)}" data-status="${esc(t.status)}">
+<summary><span class="dot s-${esc(t.status)}"></span><span class="tid">${esc(t.id)}</span><span class="ttl">${fmt(t.title)}</span>${chips(t)}
+<select class="st" aria-label="Status">${STATUSES.map(s => `<option value="${s}"${s === t.status ? " selected" : ""}>${LABEL[s]}</option>`).join("")}</select></summary>
+<div class="tb">
+ ${t.why ? `<p>${fmt(t.why)}</p>` : ""}
+ <div class="grid">
+  <div>${(t.what || []).length ? `<div class="kv">What</div><ul>${t.what.map(w => `<li>${fmt(w)}</li>`).join("")}</ul>` : ""}
+   ${deps ? `<div class="kv">Depends on: ${deps}</div>` : ""}
+   ${t.modelWhy ? `<div class="kv">Model: ${fmt(t.modelWhy)}</div>` : ""}</div>
+  <div><div class="kv">Done when</div><ul class="checks">${(t.accept || []).map((a, i) =>
+    `<li><label><input type="checkbox" class="ck" data-i="${i}"${t.checks[i] ? " checked" : ""}>${fmt(a)}</label></li>`).join("")}</ul></div>
+ </div>
+ <label class="kv" for="n-${nid}">Notes</label>
+ <textarea class="nt" id="n-${nid}" placeholder="Your notes; Claude adds its own as lines starting with Claude:">${esc(t.notes || "")}</textarea>
+ <div class="row">
+  <button class="cp">Copy prompt</button>
+  <button class="cl">Copy Coniso command</button>
+  ${t.review ? '<button class="cr">Copy review prompt</button>' : ""}
+  <span class="kv">${t.updated ? "updated " + esc(t.updated.replace("T", " ").replace("Z", " UTC")) : ""}${t._local ? " · browser copy" : ""}</span>
+ </div>
+</div></details>`;
+}
+
+function render() {
+  const m = data.meta || {};
+  document.title = (m.title || "Roadmap") + " — roadmap";
+  $("#h-title").innerHTML = esc(m.title || "Roadmap") + `<small>${esc([m.product, "rev " + (m.revision || 1), m.updated ? "file updated " + m.updated.slice(0, 10) : ""].filter(Boolean).join(" · "))}</small>`;
+  const T = data.tickets || [];
+  const c = counts(T);
+  const ready = T.filter(t => t.status === "todo" && depsMet(t));
+  const active = T.filter(t => t.status === "progress");
+  const review = T.filter(t => t.status === "review");
+  const blocked = T.filter(t => t.status === "blocked");
+  const sections = [];
+
+  sections.push(`<section id="overview"><div class="card pad">
+   ${m.summary ? `<p style="margin-top:0">${fmt(m.summary)}</p>` : ""}
+   <div class="summary">${T.length ? barHTML(c, T.length) : ""}${STATUSES.map(s => `<span class="pill"><span class="dot s-${s}"></span>${LABEL[s]} ${c[s]}</span>`).join("")}</div>
+  </div></section>`);
+
+  const quick = (title, list, hint) => list.length ? `<h3 style="font-size:14px;margin:12px 0 4px">${title} <span class="muted">(${list.length})</span></h3>${hint ? `<div class="kv">${hint}</div>` : ""}${list.map(ticketHTML).join("")}` : "";
+  sections.push(`<section id="next"><h2>Up next</h2>${
+    quick("Ready to start", ready, "To do, with every dependency in review or done.") +
+    quick("In progress", active) +
+    quick("Waiting for your check", review, "Built and reviewed by Claude. Tick the done-when items as you confirm them, then mark Done.") +
+    quick("Blocked", blocked) || '<div class="card empty">Nothing ready yet. Add tickets, or check the gates below.</div>'}</section>`);
+
+  sections.push(`<section id="phases"><h2>Phases</h2>
+   <div class="filters"><input type="text" id="q" placeholder="Filter tickets by id, title or text">
+   ${STATUSES.map(s => `<label class="pill"><input type="checkbox" class="fs" value="${s}" checked> ${LABEL[s]}</label>`).join("")}</div>
+   ${(data.phases || []).map(ph => {
+     const pt = T.filter(t => t.phase === ph.id);
+     const pc = counts(pt);
+     const open = pt.some(t => t.status !== "done") || !pt.length;
+     return `<details class="card phase" id="p-${esc(ph.id)}"${open ? " open" : ""}><summary>
+       <h3>${esc(ph.id)} · ${fmt(ph.name)}${ph.weeks ? ` <span class="muted" style="font-weight:400">· ${esc(/^\d+(\.\d+)?$/.test(String(ph.weeks)) ? ph.weeks + " wk" : ph.weeks)}</span>` : ""}</h3>
+       ${pt.length ? `<span class="pill">${pc.done}/${pt.length} done</span>` : ""}
+       <button class="cph" data-phase="${esc(ph.id)}" title="Run this phase with Coniso">Copy Coniso command</button></summary>
+       <div class="body">
+        ${ph.short ? `<p style="margin-top:0"><strong>${fmt(ph.short)}</strong></p>` : ""}
+        ${ph.why ? `<p class="muted">${fmt(ph.why)}</p>` : ""}
+        ${ph.gate ? `<div class="gate"><strong>Gate:</strong> ${fmt(ph.gate)}</div>` : ""}
+        ${ph.parallel ? `<div class="kv">Parallel: ${fmt(Array.isArray(ph.parallel) ? ph.parallel.join(", ") : ph.parallel)}</div>` : ""}
+        ${(ph.outline || []).length ? `<div class="kv">Outline (expanded into tickets when the previous gate passes)</div><ul>${ph.outline.map(o => `<li>${fmt(o)}</li>`).join("")}</ul>` : ""}
+        ${pt.map(t => ticketHTML(t, true)).join("") || (ph.outline ? "" : '<div class="empty">No tickets yet.</div>')}
+       </div></details>`;
+   }).join("") || '<div class="card empty">No phases yet.</div>'}
+  </section>`);
+
+  const lst = (id, title, arr) => (arr || []).length ? `<section id="${id}"><h2>${title}</h2><div class="card pad"><ul class="list">${arr.map(x =>
+    `<li>${typeof x === "string" ? fmt(x) : fmt([x.date, x.title || x.text || x.q || x.item, x.why || x.note || x.a].filter(Boolean).join(" — "))}</li>`).join("")}</ul></div></section>` : "";
+  sections.push(lst("decisions", "Decisions", data.decisions));
+  sections.push(lst("open", "Open questions", data.open));
+  sections.push(lst("later", "Later", data.later));
+
+  sections.push(`<section id="log"><h2>Log</h2><div class="card pad"><ul class="log">${(data.log || []).slice().reverse().map(l =>
+    `<li><span class="kv">${esc(l.date || "")}${l._local ? " · browser copy" : ""}</span> ${fmt(l.text)}</li>`).join("") || '<li class="muted">No entries yet.</li>'}</ul></div></section>`);
+
+  sections.push(`<section id="guide"><h2>How to use</h2><div class="card pad">
+   <ul>${(m.howto || []).map(h => `<li>${fmt(h)}</li>`).join("")}</ul>
+   ${m.modelNote ? `<p>${fmt(m.modelNote)}</p>` : ""}
+   <ul>${(data.models || []).map(x => `<li><strong>${esc(x.name)}</strong> (${esc(x.key)}): ${fmt(x.when)}</li>`).join("")}</ul>
+   ${m.effortNote ? `<p>${fmt(m.effortNote)}</p>` : ""}
+   <ul>${(data.efforts || []).map(x => `<li><strong>${esc(x.key)}</strong>: ${fmt(x.when)}</li>`).join("")}</ul>
+  </div></section>`);
+
+  $("#app").innerHTML = sections.join("");
+  $("#nav").innerHTML = [["overview", "Overview"], ["next", "Up next"], ["phases", "Phases"]]
+    .concat((data.phases || []).map(p => ["p-" + p.id, p.id]))
+    .concat([["decisions", "Decisions"], ["open", "Open"], ["later", "Later"], ["log", "Log"], ["guide", "How to use"]])
+    .filter(([id]) => document.getElementById(id)).map(([id, l]) => `<a href="#${esc(id)}">${esc(l)}</a>`).join("");
+  applyFilter();
+}
+
+function applyFilter() {
+  const q = ($("#q") && $("#q").value || "").toLowerCase();
+  const on = new Set(Array.from(document.querySelectorAll(".fs")).filter(x => x.checked).map(x => x.value));
+  document.querySelectorAll("#phases .ticket").forEach(el => {
+    const t = byId[el.dataset.id];
+    const hay = (t.id + " " + t.title + " " + (t.why || "") + " " + (t.what || []).join(" ") + " " + (t.notes || "")).toLowerCase();
+    el.classList.toggle("hide", !on.has(t.status) || (q && !hay.includes(q)));
+  });
+}
+
+// ---- events (delegated; ticket cards appear in several sections)
+const app = $("#app");
+app.addEventListener("click", e => {
+  const card = e.target.closest(".ticket"); const t = card && byId[card.dataset.id];
+  if (e.target.closest(".st")) { e.preventDefault(); return; }  // don't toggle the card
+  if (e.target.matches(".cp")) copy(promptFor(t), "Prompt for " + t.id + " copied");
+  else if (e.target.matches(".cl")) copy("/coniso:lead " + t.id, "Coniso command copied");
+  else if (e.target.matches(".cr")) copy(reviewFor(t), "Review prompt copied");
+  else if (e.target.matches(".cph")) { e.preventDefault(); copy("/coniso:director " + e.target.dataset.phase, "Coniso command copied"); }
+  else if (e.target.matches("a.dep")) { const d = document.getElementById(e.target.getAttribute("href").slice(1)); if (d) d.open = true; }
+});
+app.addEventListener("change", e => {
+  const card = e.target.closest(".ticket"); const t = card && byId[card.dataset.id];
+  if (e.target.matches(".st")) { t.status = e.target.value; touch(t); render(); toast(t.id + " → " + LABEL[t.status]); }
+  else if (e.target.matches(".ck")) { t.checks[+e.target.dataset.i] = e.target.checked; touch(t); card.classList.add("local"); }
+  else if (e.target.matches(".fs")) applyFilter();
+});
+app.addEventListener("input", e => {
+  if (e.target.matches("#q")) return applyFilter();
+  if (e.target.matches(".nt")) { const t = byId[e.target.closest(".ticket").dataset.id]; t.notes = e.target.value; touch(t); }
+});
+
+$("#b-save").addEventListener("click", () => {
+  const out = JSON.parse(JSON.stringify(data));
+  out.tickets.forEach(t => delete t._local);
+  out.log.forEach(l => delete l._local);
+  out.meta.updated = nowZ();
+  const json = JSON.stringify(out, null, 1).replace(/<\//g, "<\\/");
+  const doc = document.documentElement.cloneNode(true);
+  doc.querySelector("#app").innerHTML = "";
+  doc.querySelector("#nav").innerHTML = "";
+  doc.querySelector("#roadmap-data").textContent = "\n" + json + "\n";
+  const blob = new Blob(["<!DOCTYPE html>\n" + doc.outerHTML], {type: "text/html"});
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = (data.meta.filename || (data.meta.title || "Roadmap").replace(/\W+/g, "-") + "-Roadmap.html");
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  toast("Saved — replace the file in the repo with the download");
+});
+
+$("#b-status").addEventListener("click", () => {
+  const T = data.tickets || []; const c = counts(T); const m = data.meta;
+  const changed = T.filter(t => t._local);
+  const lines = [`Roadmap status — ${m.title} (rev ${m.revision}, file updated ${m.updated}). Copied ${nowZ()}.`];
+  if (changed.length) {
+    lines.push("Changed in my browser since the file was saved:");
+    changed.forEach(t => lines.push(`- ${t.id} ${t.title}: status ${t.status}; checks ${t.checks.filter(Boolean).length}/${t.checks.length}` +
+      (t.checks.length ? ` [${t.checks.map(x => x ? "x" : " ").join("")}]` : "") + (t.notes ? `; notes: ${JSON.stringify(t.notes)}` : "") + `; updated ${t.updated}`));
+  } else lines.push("No browser-only ticket changes.");
+  const pl = (data.log || []).filter(l => l._local);
+  if (pl.length) { lines.push("Log entries not yet in the file:"); pl.forEach(l => lines.push(`- ${l.date}: ${l.text}`)); }
+  lines.push("Overall: " + STATUSES.map(s => `${s} ${c[s]}`).join(" · "));
+  lines.push("Please apply these to the roadmap file (Coniso: `roadmap` procedure).");
+  copy(lines.join("\n"), "Status copied");
+});
+
+$("#b-log").addEventListener("click", () => {
+  const text = prompt("Log entry:");
+  if (!text || !text.trim()) return;
+  const entry = {id: "L" + Date.now(), date: new Date().toISOString().slice(0, 10), text: text.trim()};
+  local.log = (local.log || []).concat([entry]); writeLocal();
+  data.log.push(Object.assign({_local: true}, entry));
+  render(); location.hash = "#log";
+});
+
+$("#b-reset").addEventListener("click", () => {
+  if (!confirm("Forget this browser's changes to this roadmap? The file itself is not changed.")) return;
+  try { localStorage.removeItem(KEY); } catch (e) {}
+  location.reload();
+});
+
+render();
+if (location.hash.startsWith("#t-")) { const d = document.getElementById(location.hash.slice(1)); if (d) { d.open = true; d.scrollIntoView(); } }
+})();
+</script>
+</body>
+</html>

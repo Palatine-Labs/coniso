@@ -1,0 +1,17 @@
+{
+  "name": "coniso",
+  "description": "Coniso: context-isolated agent teams for Claude Code, by Palatine Labs.",
+  "owner": {
+    "name": "Palatine Labs",
+    "url": "https://github.com/Palatine-Labs"
+  },
+  "plugins": [
+    {
+      "name": "coniso",
+      "source": "./",
+      "version": "1.0.0",
+      "description": "Context-isolated agent teams for Claude Code: call a role and it brings its team.",
+      "category": "development"
+    }
+  ]
+}
