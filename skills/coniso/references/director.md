@@ -109,6 +109,7 @@ Run `CONISO land <ids> [--tokens <reviewer's tokens>]` on `passed` tickets. It m
 ## 10. End of sprint
 1. Run `CONISO retro`.
 2. Under its **Lessons**, append 3–5 lines: brief gaps that caused rework, specialties worth promoting, auditor catches, and overrules that proved wrong.
+   - If retro lists agent feedback over 30 lines, condense each named `docs/agent-feedback/<specialty>.md` to 30 lines or fewer: merge duplicate lessons and drop ones a later lesson supersedes, keeping each as a one-line imperative. Commit the result. Engineers read these files on every packet.
 3. Report to the user in at most 15 lines:
    - merged tickets, now `review` in the roadmap, with the acceptance checks the user should click through;
    - blocked tickets and the decision each needs;

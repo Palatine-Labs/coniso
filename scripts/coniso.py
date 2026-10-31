@@ -1711,6 +1711,9 @@ def cmd_roadmap_sync(a):
     print(f"ROADMAP rev {meta['revision']}: " + "; ".join(parts) + committed)
 
 
+FEEDBACK_MAX = 30
+
+
 def token_totals(c):
     """Retro lines: reported subagent tokens per ticket and per role (from `set --tokens`)."""
     per_ticket, per_role = {}, {}
@@ -1756,6 +1759,15 @@ def cmd_retro(a):
     st = ledger_stats(rows)
     if st:
         lines += ["Auditor ledger (overrules worth a look):", st]
+    fb = ROOT / "docs" / "agent-feedback"
+    long_fb = []
+    if fb.is_dir():
+        for f in sorted(fb.glob("*.md")):
+            n = len([x for x in f.read_text(encoding="utf-8").splitlines() if x.strip()])
+            if n > FEEDBACK_MAX:
+                long_fb.append(f"{f.name} ({n})")
+    if long_fb:
+        lines.append(f"Agent feedback over {FEEDBACK_MAX} lines (condense, director.md §10): " + ", ".join(long_fb))
     lines += ["Lessons:", "- (Director: brief gaps, forged specialties worth keeping, routing that the auditor caught)", ""]
     text = "\n".join(lines)
     with (L / "RETRO.md").open("a", encoding="utf-8") as fh:
