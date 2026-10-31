@@ -112,8 +112,10 @@ Run `CONISO land <ids> [--tokens <reviewer's tokens>]` on `passed` tickets. It m
 4. Run `CONISO close` when nothing is in flight.
 
 ## Long sessions
-All state lives in files. When your own context gets heavy:
-1. Finish in-flight merges and run `roadmap-sync`.
-2. Tell the user they can open a fresh session and say "director, continue".
+All state lives in files.
+- **Restart point.** After every 3 merged waves (`land` prints `RESTART POINT`), or sooner when your own context gets heavy:
+  1. Finish in-flight merges, and run `roadmap-sync` if `land` didn't.
+  2. Tell the user in one line to open a fresh session and say "director, continue".
+- **After a compaction**, the plugin's SessionStart hook puts the open sprint board and the current wave back in your context. Trust it and the files over what you remember, and re-read this file before the next step if its rules are gone.
 
 Agents still running from the old session are lost. Their worktrees and reports persist.
