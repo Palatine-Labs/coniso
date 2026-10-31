@@ -48,6 +48,7 @@ Budget posture:
 ## 4. Deploy
 - Spawn exactly the printed `SPAWN` lines, all in one message: `subagent_type` and `model` as printed, the prompt as printed.
 - **Managed formation:** spawn all managers (opus) in one message. A manager returns after each wave. Continue it with SendMessage: "Wave <n>: run <ids>. Brief updated: <line or none>".
+  - **Rotate managers.** Every 3 waves, spawn a fresh manager for the track (same `T<k>.md` assignment, updated with the wave to run) instead of resuming the old one. Its state is on disk.
 - **Direct formation:** a solo engineer records its own ticket as `built` (its assignment's ON DONE line). On `partial`/`failed`, retry once with a tightened assignment via SendMessage; a second failure is a fail (§7).
 
 Track progress with one TaskCreate per wave, so the user can watch the widget.
@@ -59,6 +60,7 @@ As soon as any ticket is `built`, don't wait for the wave to finish:
 1. Write the Review Lead's assignment `.coniso/assignments/rv-r<n>.md` listing the built tickets.
 2. Spawn `coniso:review-lead` (opus), or SendMessage the existing one: "Round <n>: <ids>".
 3. Keep at most one review round in flight per Review Lead. Built tickets queue for the next round.
+4. **Rotate it.** Every 3 review rounds, spawn a fresh Review Lead for the next round instead of resuming the old one. Its state is all on disk (sprint.json, reports, the ledger), and a fresh context reads only what the new round needs.
 
 ### 5b. Review without a Review Lead
 Used for a single Lead call on a solo ticket, where spawning a Review Lead would cost more than the ticket.
@@ -74,7 +76,7 @@ Used for a single Lead call on a solo ticket, where spawning a Review Lead would
 - **Minors.** By default carry them as notes, or to a named follow-up ticket. Fix them before merge only when the fix is cheap and inside the ticket's own files: send them to the same builder.
   - Fixes that touch only tests, docs or comments: the merge's integration test is the evidence. No further review and no audit.
   - Fixes that touch production code: one sonnet **delta check** (`CONISO review <id> --delta`) on the diff since the review. It isn't a full re-review, and it isn't audited unless it fails.
-- **Fix rounds** go to the same unit by SendMessage while its context is healthy, since it already holds the code. Use a fresh unit only on escalation, or when the unit has reported more than about 200k tokens.
+- **Fix rounds** go to the same unit by SendMessage while its context is healthy, since it already holds the code. Use a fresh unit only on escalation, or when the unit has reported more than about 100k tokens.
 - **Re-reviews** after a fix round get one reviewer with `SCOPE: delta` (`CONISO review` does this by itself): the fix list plus regression in the files the fix touched, reusing the earlier review's probes and logs. Sonnet by default. Use `--model opus` only when the ticket is opus and the failing finding was a design or correctness major.
 - **Your own design rulings.** Before you write a design rule into a fix list, check each of its premises against the source, because a wrong premise costs a full round. Never Read project source files yourself:
   - Check a premise with one tightly scoped Grep: a narrow path or glob, `head_limit` of a few lines, and a pattern that answers it on a single line.
