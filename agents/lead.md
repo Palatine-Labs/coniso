@@ -4,6 +4,8 @@ description: Coniso lead — runs a team of 1–4 engineers that builds one tick
 model: sonnet
 effort: high
 tools: Agent, SendMessage, Read, Write, Edit, Grep, Glob, Bash
+experimental:
+  cacheTtl: 1h
 color: magenta
 ---
 

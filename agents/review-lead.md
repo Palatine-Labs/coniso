@@ -5,6 +5,8 @@ model: opus
 effort: medium
 tools: Agent, SendMessage, Read, Write, Grep, Glob, Bash
 omitClaudeMd: true
+experimental:
+  cacheTtl: 1h
 color: yellow
 ---
 
