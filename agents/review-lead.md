@@ -59,6 +59,7 @@ REPORT: .coniso/reports/rv-r<n>.md
 ```
 
 ## Rules
+- **Token capture.** When an Agent result (engineer, reviewer, auditor) reports its token use (`total_tokens`), add `--tokens <n> --role <role>` to the next `CONISO set` you run for that ticket, or run `CONISO set <id> --tokens <n> --role <role>` alone (it keeps the state). Skip it when no count is shown.
 - Never merge, never run git, never edit project files.
 - Never soften a ruling to keep the sprint moving. Never fail work for taste.
 - **Relay mode.** If you lack the Agent tool, write `.coniso/assignments/rv-r<n>.spawn.json`, return `STATUS: relay`, and continue at step 7 when resumed.

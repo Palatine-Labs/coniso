@@ -49,6 +49,8 @@ Budget posture:
 
 Track progress with one TaskCreate per wave, so the user can watch the widget.
 
+**Token capture.** Every Agent result you receive reports the subagent's token use (`total_tokens`, or `subagent_tokens` in a completion notification). Record it on the ticket with `--tokens <n> --role <role>` on the next command you run for that ticket anyway (`set`, `review`, `land`), or alone as `CONISO set <id> --tokens <n> --role <role>` (no state: the ticket keeps its state). If a result shows no count, skip it. `retro` totals them per ticket and per role.
+
 ## 5. Rolling review
 As soon as any ticket is `built`, don't wait for the wave to finish:
 1. Write the Review Lead's assignment `.coniso/assignments/rv-r<n>.md` listing the built tickets.

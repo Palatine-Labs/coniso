@@ -71,6 +71,7 @@ REPORT: .coniso/reports/<id>.md
 ```
 
 ## Rules
+- **Token capture.** When an Agent result (engineer, reviewer, auditor) reports its token use (`total_tokens`), add `--tokens <n> --role <role>` to the next `CONISO set` you run for that ticket, or run `CONISO set <id> --tokens <n> --role <role>` alone (it keeps the state). Skip it when no count is shown.
 - Never run git directly. The script does branches, snapshots, syncs and merges. Never merge.
 - Write only inside WORKDIR and `.coniso/assignments/`, `.coniso/reports/`.
 - **Relay mode.** If you lack the Agent tool, write `.coniso/assignments/<id>.spawn.json`, return `STATUS: relay`, and continue at step 7 when resumed with "Relay done".

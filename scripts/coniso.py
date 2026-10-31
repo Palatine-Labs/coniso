@@ -152,8 +152,13 @@ def ticket(c, tid):
     return t
 
 
-def note(t, state, text=""):
-    t.setdefault("history", []).append({"ts": now_z(), "state": state, "note": text})
+def note(t, state, text="", tokens=None, role=None):
+    h = {"ts": now_z(), "state": state, "note": text}
+    if tokens:
+        h["tokens"] = int(tokens)
+    if role:
+        h["role"] = role
+    t.setdefault("history", []).append(h)
 
 
 def main_dirty(ignore=()):
@@ -1011,6 +1016,16 @@ def next_ready(c):
 
 
 def cmd_set(a):
+    if a.state is None:             # token/note record only: the ticket keeps its state
+        if not (a.tokens or a.note):
+            die("set <id> needs a state, or --tokens/--note to record without changing state")
+        with Lock():
+            c = load_sprint()
+            t = ticket(c, a.id)
+            note(t, t["state"], a.note or "", a.tokens, a.role)
+            save_sprint(c)
+        print(f"{a.id} {t['state']}" + (f" · {a.tokens} tokens ({a.role or '?'})" if a.tokens else ""))
+        return
     if a.state not in STATES or a.state == "merged":
         die(f"state must be one of {', '.join(s for s in STATES if s != 'merged')} (merge sets merged)")
     with Lock():
@@ -1029,7 +1044,7 @@ def cmd_set(a):
                 t["formation"] = team_formation(t.get("size") or "M", a.model)
                 note(t, t["state"], f"escalated {prev} -> {a.model}; solo -> team({t['formation']['engineers']} eng)")
         t["state"] = a.state
-        note(t, a.state, a.note or "")
+        note(t, a.state, a.note or "", a.tokens, a.role)
         save_sprint(c)
     print(f"{a.id} -> {a.state}" + (f" (attempt {t['attempts'] + 1})" if t["attempts"] else ""))
 
@@ -1596,6 +1611,24 @@ def cmd_roadmap_sync(a):
     print(f"ROADMAP rev {meta['revision']}: " + "; ".join(parts) + committed)
 
 
+def token_totals(c):
+    """Retro lines: reported subagent tokens per ticket and per role (from `set --tokens`)."""
+    per_ticket, per_role = {}, {}
+    for tid, t in c["tickets"].items():
+        for h in t.get("history", []):
+            n = h.get("tokens")
+            if n:
+                per_ticket[tid] = per_ticket.get(tid, 0) + n
+                r = h.get("role") or "?"
+                per_role[r] = per_role.get(r, 0) + n
+    if not per_ticket:
+        return []
+    total = sum(per_ticket.values())
+    return [f"Tokens (reported): {total:,} total · per ticket: "
+            + ", ".join(f"{k} {v:,}" for k, v in sorted(per_ticket.items(), key=lambda x: -x[1])),
+            "Tokens per role: " + ", ".join(f"{k} {v:,}" for k, v in sorted(per_role.items(), key=lambda x: -x[1]))]
+
+
 def cmd_retro(a):
     c = load_sprint()
     rows = []
@@ -1617,6 +1650,9 @@ def cmd_retro(a):
     conf_ = [tid for tid, t in c["tickets"].items() if any("conflict" in h["note"] for h in t["history"])]
     if conf_:
         lines.append("Merge conflicts: " + ", ".join(conf_))
+    tk = token_totals(c)
+    if tk:
+        lines += tk
     st = ledger_stats(rows)
     if st:
         lines += ["Auditor ledger (overrules worth a look):", st]
@@ -1961,7 +1997,9 @@ def main():
 
     s = sp.add_parser("set")
     s.add_argument("id")
-    s.add_argument("state")
+    s.add_argument("state", nargs="?", help="new state; omit to record --tokens/--note only")
+    s.add_argument("--tokens", type=int, help="total_tokens an Agent result reported for this ticket's unit")
+    s.add_argument("--role", help="role that spent --tokens: engineer, lead, reviewer, auditor, manager, review-lead, scout")
     s.add_argument("--note")
     s.add_argument("--verdict")
     s.add_argument("--model", choices=["haiku", "sonnet", "opus"], help="record an escalation")

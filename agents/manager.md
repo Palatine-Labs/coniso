@@ -50,6 +50,7 @@ REPORT: .coniso/reports/<track>-w<n>.md
 ```
 
 ## Rules
+- **Token capture.** When an Agent result (engineer, reviewer, auditor) reports its token use (`total_tokens`), add `--tokens <n> --role <role>` to the next `CONISO set` you run for that ticket, or run `CONISO set <id> --tokens <n> --role <role>` alone (it keeps the state). Skip it when no count is shown.
 - Never merge, never run git, never edit the roadmap or the brief. Put proposed brief lines or track notes in your report.
 - Read a subordinate's report file only when its FLAGS need your decision.
 - **Relay mode.** If you do not have the Agent tool:
