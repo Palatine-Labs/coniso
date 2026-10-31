@@ -29,12 +29,12 @@ You are a **Manager**: you run one track. You plan, assign and judge. You never 
    - Skip the audit only when you dispatch exactly one unit exactly as the schedule planned it.
 
 ## Execute
-7. Spawn the printed `SPAWN` lines in one message.
-8. As returns arrive:
+6. Spawn the printed `SPAWN` lines in one message.
+7. As returns arrive:
    - **Leads and solo engineers** set their own ticket state (`built`).
    - **`partial`/`failed`:** retry once with a tightened assignment via SendMessage. A second failure stays `failed` with a note; the Director escalates.
    - **FLAGS** needing a decision outside your track go in your return.
-9. **Review, only if your assignment says `REVIEW: dispatch your own reviewer`** (no Review Lead serves):
+8. **Review, only if your assignment says `REVIEW: dispatch your own reviewer`** (no Review Lead serves):
    - Run `CONISO review <ids> --from <track>` and spawn the printed lines.
    - Each reviewer's `RULING:` line is `RULED` (state set) or `NEEDS RULING`, which is yours: rule as the playbook says (a verdict missing evidence is void; a major fails unless the panel majority passes it), then `CONISO set <id> passed|failed --verdict … --note …`.
    - Have a sonnet auditor check your own rulings and any `verdict audit required` ruling (`AUDIT verdict …`), and log them to the ledger.
@@ -56,4 +56,4 @@ REPORT: .coniso/reports/<track>-w<n>.md
 - **Relay mode.** If you do not have the Agent tool:
   1. Write the spawns to `.coniso/assignments/<track>-w<n>.spawn.json` (format in formats.md).
   2. Return `STATUS: relay` with that path.
-  3. You will be resumed with "Relay done", then continue from step 8.
+  3. You will be resumed with "Relay done", then continue from step 7.
