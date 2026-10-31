@@ -1052,8 +1052,18 @@ def cmd_adhoc(a):
 
 def cmd_status(a):
     c = load_sprint()
+    if a.field:
+        if not a.id:
+            die("status --field needs a ticket id")
+        val = ticket(c, a.id)
+        for part in a.field.split("."):
+            if not isinstance(val, dict) or part not in val:
+                die(f"{a.id} has no field {a.field}")
+            val = val[part]
+        print(val if isinstance(val, str) else json.dumps(val, separators=(",", ":")))
+        return
     if a.json:
-        print(json.dumps(c if not a.id else c["tickets"].get(a.id), indent=1))
+        print(json.dumps(c if not a.id else ticket(c, a.id), separators=(",", ":"), ensure_ascii=False))
         return
     counts = {}
     for t in c["tickets"].values():
@@ -1797,7 +1807,30 @@ def token_totals(c):
             "Tokens per role: " + ", ".join(f"{k} {v:,}" for k, v in sorted(per_role.items(), key=lambda x: -x[1]))]
 
 
+def last_lessons():
+    """The Lessons lines of the last sprint in RETRO.md (what the Director reads at setup)."""
+    f = L / "RETRO.md"
+    if not f.exists():
+        return []
+    text = f.read_text(encoding="utf-8")
+    last = text[text.rfind("\n## ") + 1:] if "\n## " in text else text
+    out, on = [], False
+    for ln in last.splitlines():
+        if ln.startswith("Lessons:"):
+            on = True
+            continue
+        if on and ln.startswith("## "):
+            break
+        if on and ln.strip() and "(Director:" not in ln:
+            out.append(ln)
+    return out
+
+
 def cmd_retro(a):
+    if a.lessons:
+        ls = last_lessons()
+        print("\n".join(ls) if ls else "no lessons recorded")
+        return
     c = load_sprint()
     rows = []
     lp = L / "ledger.jsonl"
@@ -2592,7 +2625,8 @@ def main():
     s = sp.add_parser("status")
     s.add_argument("id", nargs="?")
     s.add_argument("--open", action="store_true")
-    s.add_argument("--json", action="store_true")
+    s.add_argument("--json", action="store_true", help="compact JSON")
+    s.add_argument("--field", help="one field of the ticket, dotted for nested ones, e.g. review_plan.kind")
     s.set_defaults(fn=cmd_status)
 
     s = sp.add_parser("set")
@@ -2708,6 +2742,7 @@ def main():
     s.set_defaults(fn=cmd_brief_trim)
 
     s = sp.add_parser("retro")
+    s.add_argument("--lessons", action="store_true", help="print only the last sprint's Lessons lines; writes nothing")
     s.set_defaults(fn=cmd_retro)
 
     s = sp.add_parser("close")

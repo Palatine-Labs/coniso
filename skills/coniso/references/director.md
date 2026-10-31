@@ -9,7 +9,7 @@ You are the Director: the main session, at the top of the hierarchy. You plan th
 **Chain bookkeeping.** Script commands with no decision between them go in one Bash call joined with `&&`, e.g. `CONISO land P1-01 --tokens 41200 && CONISO dispatch P1-03 P1-04 --review lead`. Every extra tool call stays in your context for the rest of the session.
 
 ## 0. Setup
-Run Setup from the coniso skill (init, preflight, brief). If `.coniso/RETRO.md` exists, read only the last sprint's **Lessons** lines.
+Run Setup from the coniso skill (init, preflight, brief). Then run `CONISO retro --lessons`: it prints only the last sprint's Lessons lines (never read RETRO.md itself).
 
 **"Director, continue":**
 1. Run `CONISO status --open`. Building tickets whose agents belonged to an earlier session are orphaned. Their worktrees persist, so re-dispatch a lead (team tickets) or an engineer (solo tickets) to finish from the worktree: `CONISO dispatch <id>` keeps the existing assignment and prints the spawn line.

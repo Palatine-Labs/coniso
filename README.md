@@ -181,14 +181,14 @@ Being straight about this:
 | `validate-plan <table> [--slots N] [--no-files]` | Check a delegation plan: one owner per file per step, complete assignment files, slot limits; `MATCHES SCHEDULE` when it is exactly the scheduled plan (no audit needed) |
 | `validate-handoff <id>` | Check a lead's hand-off: evidence per acceptance item, a passing test log, no unlisted `[VERIFY]`/TODO |
 | `adhoc <id> --title … [--size] [--model] [--accept …] [--prompt-file]` | Add a non-roadmap ticket |
-| `status [id] [--json] [--open]`, `set <id> [<state>] [--note] [--verdict] [--model] [--tokens N --role R]` | Sprint state; `--tokens` records an agent's reported token use for `retro` |
+| `status [id] [--json] [--open] [--field name]`, `set <id> [<state>] [--note] [--verdict] [--model] [--tokens N --role R]` | Sprint state; `--tokens` records an agent's reported token use for `retro` |
 | `wt add\|path\|remove <id>` | Worktrees on branch `coniso/<id>`, based on your current HEAD |
 | `diff <id>` / `diff --range A..B`, `test <id\|main>` | Diff and test output go to files; the console gets a summary |
 | `sync <id> [--continue]` | Bring main into a ticket's worktree to resolve conflicts |
 | `merge <id>` | Squash, integration test, commit; resets cleanly on conflict or failure |
 | `ledger add\|stats` | Auditor objection log |
 | `brief-trim [--before YYYY-MM-DD]` | Move Decisions log rows older than the current sprint out of the brief, into `.coniso/maps/decisions.md` |
-| `roadmap-sync`, `retro`, `close` | Write back, report, archive |
+| `roadmap-sync`, `retro [--lessons]`, `close` | Write back, report (tokens per ticket and role, oversized feedback files; `--lessons` prints only the last Lessons), archive |
 | `roadmap new\|show\|next\|validate\|extract\|write\|set\|log\|upgrade` | Roadmap file tools (work without `.coniso/`) |
 
 ## Stack packs

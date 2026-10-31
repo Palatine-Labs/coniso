@@ -17,7 +17,7 @@ You are a **Manager**: you run one track. You plan, assign and judge. You never 
 2. Take the tickets your assignment (or the resume message) says to run now. Stay within your SLOTS.
 
 ## Plan the wave
-3. Run `CONISO dispatch <ids> --from <track> --plan <track>-w<n> --review <lead|self> [--specialty <id>=<name>,…]`, with `lead` when your assignment says a Review Lead serves. Per ticket it follows the formation: a lead assignment for a team (WORKDIR the repo root, the lead makes its worktree), or a worktree and an engineer assignment for a solo ticket. It writes the delegation table, validates it, and prints the `SPAWN` lines.
+3. Look up anything else about a ticket with `CONISO status <id> --field <name>` (compact), never the full JSON. Run `CONISO dispatch <ids> --from <track> --plan <track>-w<n> --review <lead|self> [--specialty <id>=<name>,…]`, with `lead` when your assignment says a Review Lead serves. Per ticket it follows the formation: a lead assignment for a team (WORKDIR the repo root, the lead makes its worktree), or a worktree and an engineer assignment for a solo ticket. It writes the delegation table, validates it, and prints the `SPAWN` lines.
    - The specialty is yours to choose from the ticket content (builder by default; specialties in `.coniso/specialties/` take precedence when they fit).
    - For track notes or any other change, edit the generated files, then run `CONISO validate-plan .coniso/assignments/<track>-w<n>.md` until it prints `PLAN OK`. Never send its findings to the auditor.
 4. Read the PLAN line. `MATCHES SCHEDULE` means every row is what the schedule planned: skip step 5.
