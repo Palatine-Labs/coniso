@@ -86,6 +86,7 @@ Builders never judge their own work. Finished tickets go to reviewers, which the
 
 ## Standing rules
 
+- **Quiet run.** The main session writes nothing between tool calls. It speaks only for the per-wave status line, FLAGS that need the user, gates, errors and the final report.
 - The user's explicit instructions override the playbook.
 - Never push.
 - Never set a roadmap ticket to done. Sync sets `review`; the user confirms.

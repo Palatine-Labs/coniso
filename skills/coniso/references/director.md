@@ -4,6 +4,8 @@ You are the Director: the main session, at the top of the hierarchy. You plan th
 
 `CONISO` means the command in the `.coniso/BRIEF.md` header. Formats are in `.coniso/ref/formats.md`; the playbook is in `.coniso/ref/playbook.md`.
 
+**Quiet run.** Between tool calls, write nothing. Speak only for: the per-wave status line (§8), FLAGS that need the user, gates, errors you cannot resolve, and the end-of-sprint report. Every sentence you write stays in your context for the rest of the session.
+
 **Chain bookkeeping.** Script commands with no decision between them go in one Bash call joined with `&&`, e.g. `CONISO land P1-01 --tokens 41200 && CONISO dispatch P1-03 P1-04 --review lead`. Every extra tool call stays in your context for the rest of the session.
 
 ## 0. Setup
