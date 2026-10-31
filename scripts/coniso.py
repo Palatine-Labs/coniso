@@ -821,6 +821,10 @@ def cmd_preflight(a):
         line("INFO", "Coniso commands not allowed (user declined); agents may stop on permission prompts")
     else:
         line("WARN", "PERMISSIONS NOT CONFIGURED: agents may stop on prompts. Ask the user, then `permissions --write` or `permissions --decline`")
+    core = brief_core_lines()
+    if core > BRIEF_CORE_MAX:
+        line("WARN", f"brief core is {core} lines (over {BRIEF_CORE_MAX}; every agent reads it): trim it, "
+                     "`brief-trim` moves older Decisions log rows to .coniso/maps/decisions.md")
     c = load_sprint(required=False)
     if c:
         live = [tid for tid, t in c["tickets"].items() if t["state"] in ACTIVE]
@@ -830,6 +834,71 @@ def cmd_preflight(a):
         line("WARN", f"leftover worktrees with no sprint: {', '.join(stale)} (wt remove <id> --force)")
     print("\n".join(out))
     sys.exit(0 if ok else 1)
+
+
+BRIEF_CORE_MAX = 150
+DECISIONS_ARCHIVE = "maps/decisions.md"
+
+
+def brief_core_lines():
+    """Lines of BRIEF.md above "## Track notes": the part every agent reads."""
+    f = L / "BRIEF.md"
+    if not f.exists():
+        return 0
+    n = 0
+    for ln in f.read_text(encoding="utf-8").splitlines():
+        if ln.startswith("## Track notes"):
+            break
+        n += 1
+    return n
+
+
+def cmd_brief_trim(a):
+    """Move Decisions log rows older than the current sprint (or --before) to .coniso/maps/decisions.md."""
+    brief = L / "BRIEF.md"
+    if not brief.exists():
+        die("no .coniso/BRIEF.md")
+    cutoff = a.before
+    if not cutoff:
+        c = load_sprint(required=False)
+        if not c:
+            die("no active sprint: pass --before YYYY-MM-DD")
+        cutoff = c["created"][:10]
+    lines = brief.read_text(encoding="utf-8").splitlines()
+    start = next((i for i, ln in enumerate(lines) if ln.startswith("## Decisions log")), None)
+    if start is None:
+        die("the brief has no '## Decisions log' section")
+    end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith("## ")), len(lines))
+    keep, moved, seen_header = [], [], False
+    for ln in lines[start + 1:end]:
+        s = ln.strip()
+        if s.startswith("|") and not seen_header:
+            keep.append(ln)
+            if re.fullmatch(r"\|[\s:|-]+\|", s):
+                seen_header = True
+            continue
+        if s.startswith("|"):
+            m = re.search(r"\d{4}-\d{2}-\d{2}", s.strip("|").split("|")[0])
+            if m and m.group(0) < cutoff:
+                moved.append(ln)
+                continue
+        keep.append(ln)
+    if not moved:
+        print(f"brief-trim: no Decisions log rows dated before {cutoff} · core {brief_core_lines()} lines")
+        return
+    pointer = f"Older decisions (still binding): .coniso/{DECISIONS_ARCHIVE}. Grep it before changing an area they cover."
+    if not any(pointer.split(":")[0] in ln for ln in keep):
+        while keep and not keep[-1].strip():
+            keep.pop()
+        keep += [pointer, ""]
+    archive = L / DECISIONS_ARCHIVE
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    head = "" if archive.exists() else ("# Decisions log — archived from BRIEF.md (still binding)\n\n"
+                                         "| Stamp | Decision | Binds |\n|-------|----------|-------|\n")
+    with archive.open("a", encoding="utf-8") as fh:
+        fh.write(head + "\n".join(moved) + "\n")
+    brief.write_text("\n".join(lines[:start + 1] + keep + lines[end:]) + "\n", encoding="utf-8")
+    print(f"brief-trim: moved {len(moved)} row(s) dated before {cutoff} to .coniso/{DECISIONS_ARCHIVE} · core now {brief_core_lines()} lines")
 
 
 def select_from_roadmap(a, conf, c):
@@ -2552,6 +2621,10 @@ def main():
     s.add_argument("--accept-edits", dest="accept_edits", action="store_true",
                    help="also set acceptEdits as this project's default permission mode (unattended sprints)")
     s.set_defaults(fn=cmd_permissions)
+
+    s = sp.add_parser("brief-trim", help="move Decisions log rows older than the current sprint to .coniso/maps/decisions.md")
+    s.add_argument("--before", help="cutoff date YYYY-MM-DD (default: the sprint's start date)")
+    s.set_defaults(fn=cmd_brief_trim)
 
     s = sp.add_parser("retro")
     s.set_defaults(fn=cmd_retro)

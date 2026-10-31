@@ -42,7 +42,7 @@ Builders never judge their own work. Finished tickets go to reviewers, which the
 3. Run `CONISO preflight`.
    - **Dirty checkout:** ask the user to commit or stash. Never stash their work yourself.
    - **RELAY MODE reported:** spawning works as described under Spawn mechanics.
-4. Brief: `.coniso/BRIEF.md` needs the objective, pinned versions, commands and codebase map filled in. Fill it from repo files. For a large unfamiliar codebase, send 1–3 scouts (haiku) to write `.coniso/maps/*.md` and point the brief at them. Keep the core brief under 150 lines.
+4. Brief: `.coniso/BRIEF.md` needs the objective, pinned versions, commands and codebase map filled in. Fill it from repo files. For a large unfamiliar codebase, send 1–3 scouts (haiku) to write `.coniso/maps/*.md` and point the brief at them. Keep the core brief (everything above "Track notes") under 150 lines: every agent reads it. `preflight` warns when it is over, and `CONISO brief-trim` moves Decisions log rows older than the current sprint to `.coniso/maps/decisions.md`, leaving a pointer.
 
 ## Calls
 

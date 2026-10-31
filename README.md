@@ -186,6 +186,7 @@ Being straight about this:
 | `sync <id> [--continue]` | Bring main into a ticket's worktree to resolve conflicts |
 | `merge <id>` | Squash, integration test, commit; resets cleanly on conflict or failure |
 | `ledger add\|stats` | Auditor objection log |
+| `brief-trim [--before YYYY-MM-DD]` | Move Decisions log rows older than the current sprint out of the brief, into `.coniso/maps/decisions.md` |
 | `roadmap-sync`, `retro`, `close` | Write back, report, archive |
 | `roadmap new\|show\|next\|validate\|extract\|write\|set\|log\|upgrade` | Roadmap file tools (work without `.coniso/`) |
 
