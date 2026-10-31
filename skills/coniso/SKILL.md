@@ -21,7 +21,7 @@ For anything about the roadmap itself (create, status sync, what's next, expand 
 | Engineer | `coniso:engineer` | sonnet · medium (haiku mechanical, opus hard) | — | itself |
 
 Support roles, spawned by leaders:
-- **Auditor** (`coniso:auditor`) audits the judgment calls in every leader's delegation plan, and every review ruling and hand-off claim. It runs one tier cheaper than its leader: opus leader → sonnet auditor, sonnet leader → haiku auditor. The mechanical plan rules (D3 ownership, D5 assignment files, D6 slots) are checked by `CONISO validate-plan` instead, before the auditor sees a plan.
+- **Auditor** (`coniso:auditor`) audits the judgment calls in leaders' delegation plans and review rulings. It runs one tier cheaper than its leader: opus leader → sonnet auditor, sonnet leader → haiku auditor. Mechanical rules go to the script instead: `CONISO validate-plan` checks D3 ownership, D5 assignment files and D6 slots, and prints `MATCHES SCHEDULE` when every row is exactly the scheduled ticket-level plan (nothing left to judge, so no audit); `CONISO validate-handoff` checks a lead's hand-off claim.
 - **Reviewer** (`coniso:reviewer`) is the adversarial reviewer.
 - **Scout** (`coniso:scout`) does read-only recon and writes maps.
 

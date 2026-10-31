@@ -178,7 +178,8 @@ Being straight about this:
 | `init [--stack <pack>\|none]`, `preflight` | Install or refresh; check git state, roadmap validity, nesting mode and permissions |
 | `permissions [--write [--accept-edits] \| --decline \| --remove]` | Show, grant, decline or undo Coniso's entries in `.claude/settings.local.json` |
 | `schedule [--phase P] [--tickets ids] [--limit N] [--add] [--formation managed\|direct]` | Plan a sprint |
-| `validate-plan <table> [--slots N] [--no-files]` | Check a delegation plan: one owner per file per step, complete assignment files, slot limits |
+| `validate-plan <table> [--slots N] [--no-files]` | Check a delegation plan: one owner per file per step, complete assignment files, slot limits; `MATCHES SCHEDULE` when it is exactly the scheduled plan (no audit needed) |
+| `validate-handoff <id>` | Check a lead's hand-off: evidence per acceptance item, a passing test log, no unlisted `[VERIFY]`/TODO |
 | `adhoc <id> --title … [--size] [--model] [--accept …] [--prompt-file]` | Add a non-roadmap ticket |
 | `status [id] [--json] [--open]`, `set <id> [<state>] [--note] [--verdict] [--model] [--tokens N --role R]` | Sprint state; `--tokens` records an agent's reported token use for `retro` |
 | `wt add\|path\|remove <id>` | Worktrees on branch `coniso/<id>`, based on your current HEAD |

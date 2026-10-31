@@ -24,7 +24,7 @@ You are a **Lead**: you run one team that builds one ticket. You plan the work, 
 4. **Validate.** Run `CONISO validate-plan .coniso/assignments/<id>-plan.md` and fix every finding until it prints `PLAN OK`. Never send its findings to the auditor.
 5. **Audit.** Spawn `coniso:auditor` one tier below you: `haiku` if you run on sonnet, `sonnet` if you run on opus. Prompt: `AUDIT delegation .coniso/assignments/<id>-plan.md · context: .coniso/tickets/<id>.md`.
    - Answer each objection in the plan.
-   - Skip it only when you dispatch exactly one engineer at the ticket's model.
+   - Skip it only when you dispatch exactly one engineer at the ticket's model. How you split a ticket is judgment, so your packet plans never skip it otherwise.
    - Log it: `CONISO ledger add --unit <id> --leader lead --kind delegation …`.
 6. Spawn the engineers. Put independent ones in one message: `coniso:engineer`, `model` per packet, prompt `Assignment: <path>`.
 
@@ -35,11 +35,11 @@ You are a **Lead**: you run one team that builds one ticket. You plan the work, 
 8. Run `CONISO test <id>`. On failure, send a fix list to the right engineer, at most 2 rounds.
 9. **Hand-off claim.** Write `.coniso/reports/<id>.md` with:
    - files changed;
-   - for each acceptance item, the evidence it is met (test name, file:line);
+   - for each acceptance item, one line `A<n> met — <evidence>` (test name, file:line);
    - the test log path;
-   - any `[VERIFY]` or TODO left.
-10. **Audit the claim** (same tier as step 5): `AUDIT handoff .coniso/reports/<id>.md · context: .coniso/tickets/<id>.md`. Resolve the objections, then log with `--kind handoff`.
-11. Run `CONISO set <id> built --note "<phrase>"`.
+   - any `[VERIFY]` or TODO left, with the file it is in.
+10. **Check the claim:** run `CONISO validate-handoff <id>`. It checks that every acceptance item has an evidence line, the test log exists and passed (or the report explains the failure), and no `[VERIFY]`/TODO was added to a changed file without being listed. On `HANDOFF FAIL`, fix the report or the work and run it again. No auditor: these checks are mechanical.
+11. Run `CONISO set <id> built --note "<phrase>"`, chained to step 10 with `&&` so it runs only on `HANDOFF OK`.
 
 ## Review — only when your assignment says `REVIEW: dispatch your own reviewer`
 12. Run `CONISO review <id> --from <id>` (chained after step 11 with `&&`). It syncs with main, writes the reviewer assignment(s) per `review_plan`, sets `reviewing`, and prints the `SPAWN` line(s). Spawn them in one message.

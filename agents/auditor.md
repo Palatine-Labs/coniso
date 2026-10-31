@@ -38,6 +38,7 @@ Not yours: **D3** (one owner per file within a step), **D5** (assignment fields 
 - **V6** The reviewers are independent of the builders.
 
 ## Hand-off rules (kind: handoff)
+Leads check these with `CONISO validate-handoff` instead. Apply them only when a leader asks you for a hand-off audit anyway.
 - **H1** Every acceptance item claimed met has evidence (test name or file:line).
 - **H2** The test log exists and passed, or the failure is explained.
 - **H3** Leftover `[VERIFY]`/TODO markers are listed rather than hidden.

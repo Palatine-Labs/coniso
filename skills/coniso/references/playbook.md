@@ -77,10 +77,11 @@ Every escalation is recorded with `CONISO set --model`.
 
 ## Auditor — the adversary of every leader
 - **Mechanical rules go to the script, not the auditor.** Every delegation plan first passes `CONISO validate-plan`, which enforces D3 (one owner per file within a step), D5 (complete assignment files with absolute WORKDIRs) and D6 (units per step within the slot limit). It is free, instant and never wrong about these, so the auditor no longer spends tokens on them.
-- **The auditor keeps the judgment calls:** model tier (D1), packet size (D2), ordering (D4), reviewer independence (D7) and scope creep (D8) on delegation plans, plus every review ruling (V1–V6) and every lead's hand-off claim (H1–H3).
+- **The auditor keeps the judgment calls:** model tier (D1), packet size (D2), ordering (D4), reviewer independence (D7) and scope creep (D8) on delegation plans that deviate from the schedule, plus review rulings (V1–V6) per the Verdict audit table.
+- **The script takes the rest.** `validate-plan` prints `MATCHES SCHEDULE` when every row is a ticket-level unit (a lead, a solo engineer, a reviewer) at exactly the scheduled model and formation, with a script-written assignment. The roadmap and the schedule already settled D1, D2, D4 and D8 for such a plan, so it skips the delegation audit. A lead's packet plan never matches: splitting a ticket is judgment. `validate-handoff` checks a lead's hand-off claim (H1–H3), and `verdict` applies the mechanical ruling rules.
 - It runs one model tier cheaper than the leader (opus → sonnet, sonnet → haiku).
 - Auditors raise only objections that would change a verdict, a severity, a fix-list item, or a plan's model, size or order. Wording, citation format and log-path style are not objections. Each audit uses at most 8 tool calls.
-- The only exemption: a dispatch of exactly one unit whose model and formation match the scheduled plan. Single-unit dispatches also skip validate-plan (nothing for D3 or D6 to check), but their assignment still carries every formats.md field.
+- The exemptions: a dispatch of exactly one unit whose model and formation match the scheduled plan, and a plan that validate-plan marks `MATCHES SCHEDULE`. Single-unit dispatches also skip validate-plan (nothing for D3 or D6 to check), but their assignment still carries every formats.md field.
 - Each objection must cite a rule from the auditor agent.
 - The leader accepts or overrules each objection with a reason and logs it to the ledger.
 - The retro report shows overrule counts per leader. Overrules that later failed review mark that leader's routing as the thing to fix.

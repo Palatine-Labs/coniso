@@ -61,7 +61,7 @@ Auditor: <O1 accepted | O1 overruled: reason | NO OBJECTIONS>
 - **Step** is a whole number. Units with the same step run at the same time; a unit that consumes another's output gets a later step.
 - **Owns** lists files or globs separated by commas (`src/ui/**, src/app.ts`). A leader's row may name its ticket instead (`ticket P2-03`). A solo engineer building a whole ticket alone in its worktree may own `**` (nobody else works there).
 - Tables with a single unit are optional (see the playbook). Every row has an assignment file `.coniso/assignments/<unit>.md` before validation.
-- Run `CONISO validate-plan <table file>` and fix its findings until it prints `PLAN OK`. It enforces D3 (one owner per file within a step), D5 (each assignment file has an absolute WORKDIR, OBJECTIVE, OWNS, DONE WHEN and RETURN) and D6 (units per step within the slot limit). Only then does the auditor see the plan, for the judgment rules.
+- Run `CONISO validate-plan <table file>` and fix its findings until it prints `PLAN OK`. It enforces D3 (one owner per file within a step), D5 (each assignment file has an absolute WORKDIR, OBJECTIVE, OWNS, DONE WHEN and RETURN) and D6 (units per step within the slot limit). Only then does the auditor see the plan, for the judgment rules, unless the line also says `MATCHES SCHEDULE` (every row is the scheduled ticket-level plan, with script-written assignments): then there is nothing to audit.
 
 ## Audit request (the auditor's assignment file, or the one-line prompt)
 `AUDIT <delegation|verdict|handoff> <file to audit> · context: <one or two paths>`

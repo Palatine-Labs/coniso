@@ -1600,7 +1600,8 @@ def cmd_validate_plan(a):
         die(f"plan not found: {a.plan} (relative paths are tried from here and from the repo root)")
     findings, summary = validate_plan(path, a.slots, not a.no_files)
     if not findings:
-        print(f"PLAN OK {path.name}: {summary} · D3 D5 D6 pass")
+        match = not a.no_files and schedule_match(path)
+        print(f"PLAN OK {path.name}: {summary} · D3 D5 D6 pass" + (" · MATCHES SCHEDULE (skip the delegation audit)" if match else ""))
         return
     print(f"PLAN FAIL {path.name}: {summary} · {len(findings)} finding(s)")
     for rule, unit, text in findings[:20]:
@@ -1609,6 +1610,70 @@ def cmd_validate_plan(a):
         print(f"  … {len(findings) - 20} more")
     print("Fix the plan or assignment files, then run validate-plan again. Do not send these to the auditor.")
     sys.exit(1)
+
+
+MARKER_RE = re.compile(r"\[VERIFY\]|\bTODO\b")
+
+
+def cmd_validate_handoff(a):
+    """Mechanical hand-off checks (H1-H3): evidence per acceptance item, a passing test log, no hidden markers."""
+    conf = cfg()
+    c = load_sprint()
+    t = ticket(c, a.id)
+    rep = L / "reports" / f"{safe(a.id)}.md"
+    if not rep.exists():
+        die(f"no hand-off report {p(rep)}")
+    text = rep.read_text(encoding="utf-8")
+    findings = []
+    met, no_ev = set(), set()
+    for ln in text.splitlines():
+        m = ACCEPT_RE.match(ln)
+        if m and m.group(2).lower() == "met":
+            items = expand_items(m.group(1))
+            met |= items
+            ev = m.group(3).strip().lstrip("—–-:· ").strip()
+            if not ev or ev.lower() in ("none", "n/a", "-", "tbd"):
+                no_ev |= items
+    n = accept_count(a.id, t)
+    missing = sorted(set(range(1, n + 1)) - met)
+    if missing:
+        findings.append(("H1", "no 'A<n> met — <evidence>' line for A" + ",A".join(map(str, missing))))
+    if no_ev:
+        findings.append(("H1", "no evidence for A" + ",A".join(map(str, sorted(no_ev)))))
+    logs = []
+    for m in re.finditer(r"[\w.:/\\~-]+\.log\b", text):
+        cand = Path(m.group(0))
+        cand = cand if cand.is_absolute() else ROOT / cand
+        if cand.exists():
+            logs.append(cand)
+    default = L / "reports" / f"{safe(a.id)}.test.log"
+    if not logs and default.exists():
+        logs.append(default)
+    if not logs:
+        findings.append(("H2", "no test log: the report names none that exists, and .coniso/reports/" + default.name + " is missing"))
+    else:
+        exits = re.findall(r"\[exit (-?\d+)\]", logs[0].read_text(encoding="utf-8", errors="replace"))
+        if exits and exits[-1] != "0" and not re.search(r"\bfail", text, re.I):
+            findings.append(("H2", f"{logs[0].name} ends with exit {exits[-1]} and the report does not explain the failure"))
+    if t.get("wt") and conf.get("worktrees", True):
+        wt = Path(t["wt"])
+        git(["add", "-N", "--"] + pathspec_excludes(conf)[2:] + ["."], wt, check=False)
+        diff = git(["diff", "-U0", t["base"]] + pathspec_excludes(conf), wt, check=False).stdout
+        hidden, cur = {}, None
+        for ln in diff.splitlines():
+            if ln.startswith("+++ "):
+                cur = ln[6:] if ln.startswith("+++ b/") else None
+            elif ln.startswith("+") and cur and MARKER_RE.search(ln):
+                hidden[cur] = hidden.get(cur, 0) + 1
+        for f, k in sorted(hidden.items()):
+            if f not in text:      # H3: a marker the report lists is fine; a hidden one is not
+                findings.append(("H3", f"{k} [VERIFY]/TODO marker(s) added in {f}, not listed in the report"))
+    if findings:
+        print(f"HANDOFF FAIL {a.id}: {len(findings)} finding(s)")
+        for rule, msg in findings:
+            print(f"  {rule} — {msg}")
+        sys.exit(1)
+    print(f"HANDOFF OK {a.id}: {n} acceptance item(s) evidenced · log {logs[0].name} · no unlisted markers")
 
 
 def ledger_stats(rows):
@@ -2618,6 +2683,10 @@ def main():
     s.add_argument("--tokens", type=int, help="the reviewer's reported tokens, recorded on the first ticket")
     s.add_argument("--role", help="role for --tokens (default reviewer)")
     s.set_defaults(fn=cmd_land)
+
+    s = sp.add_parser("validate-handoff", help="mechanical hand-off checks: evidence per acceptance item, test log, no hidden [VERIFY]/TODO")
+    s.add_argument("id")
+    s.set_defaults(fn=cmd_validate_handoff)
 
     s = sp.add_parser("roadmap-sync")
     s.add_argument("--dry-run", action="store_true")
