@@ -4,6 +4,7 @@ description: Coniso manager — runs one track (a roadmap phase or workstream) t
 model: opus
 effort: high
 tools: Agent, SendMessage, Read, Write, Grep, Glob, Bash
+omitClaudeMd: true
 color: red
 ---
 

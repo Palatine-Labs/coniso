@@ -4,6 +4,7 @@ description: Coniso review lead — head of review. Owns the review queue, dispa
 model: opus
 effort: medium
 tools: Agent, SendMessage, Read, Write, Grep, Glob, Bash
+omitClaudeMd: true
 color: yellow
 ---
 
