@@ -1675,8 +1675,9 @@ def cmd_validate_handoff(a):
                 cur = ln[6:] if ln.startswith("+++ b/") else None
             elif ln.startswith("+") and cur and MARKER_RE.search(ln):
                 hidden[cur] = hidden.get(cur, 0) + 1
+        listed = [ln for ln in text.splitlines() if re.search(r"VERIFY|TODO", ln)]
         for f, k in sorted(hidden.items()):
-            if f not in text:      # H3: a marker the report lists is fine; a hidden one is not
+            if not any(f in ln for ln in listed):    # H3: a marker listed with its file is fine; a hidden one is not
                 findings.append(("H3", f"{k} [VERIFY]/TODO marker(s) added in {f}, not listed in the report"))
     if findings:
         print(f"HANDOFF FAIL {a.id}: {len(findings)} finding(s)")
