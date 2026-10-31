@@ -76,7 +76,9 @@ Used for a single Lead call on a solo ticket, where spawning a Review Lead would
   - Fixes that touch production code: one sonnet **delta check** (`CONISO review <id> --delta`) on the diff since the review. It isn't a full re-review, and it isn't audited unless it fails.
 - **Fix rounds** go to the same unit by SendMessage while its context is healthy, since it already holds the code. Use a fresh unit only on escalation, or when the unit has reported more than about 200k tokens.
 - **Re-reviews** after a fix round get one reviewer with `SCOPE: delta` (`CONISO review` does this by itself): the fix list plus regression in the files the fix touched, reusing the earlier review's probes and logs. Sonnet by default. Use `--model opus` only when the ticket is opus and the failing finding was a design or correctness major.
-- **Your own design rulings.** Before you write a design rule into a fix list, check each of its premises against the source (one Grep or Read per premise). A wrong premise costs a full round.
+- **Your own design rulings.** Before you write a design rule into a fix list, check each of its premises against the source, because a wrong premise costs a full round. Never Read project source files yourself:
+  - Check a premise with one tightly scoped Grep: a narrow path or glob, `head_limit` of a few lines, and a pattern that answers it on a single line.
+  - If one Grep can't settle it, spawn a haiku `coniso:scout` whose assignment asks exactly that question and says to return the answer in one line (RESULT), with no map file.
 - **Your own files.** Edit `.coniso/` notes, checks, hand-offs and rulings directly; never spawn an agent for a few-line edit. Batch tiny doc fixes into one haiku unit.
 
 ## 6. Merge (only you merge)
