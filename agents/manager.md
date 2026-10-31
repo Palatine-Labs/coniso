@@ -16,28 +16,25 @@ You are a **Manager**: you run one track. You plan, assign and judge. You never 
 2. Take the tickets your assignment (or the resume message) says to run now. Stay within your SLOTS.
 
 ## Plan the wave
-3. Per ticket, follow its formation in `CONISO status <id> --json`:
-   - **Team:** write `.coniso/assignments/<id>.md` for a lead. Model is the formation's lead model. Include the engineer count, the ticket packet path, any track notes, and `REVIEW:` copied from your assignment. WORKDIR is the repo root (the lead makes its worktree).
-   - **Solo:** run `CONISO wt add <id>`, then write `.coniso/assignments/<id>.E1.md` for one engineer. Use the printed WORKDIR, choose the specialty from the ticket content (builder by default; specialties in `.coniso/specialties/` take precedence when they fit), and set the model to the formation's.
-4. Write the delegation table to `.coniso/assignments/<track>-w<n>.md`, with a Step per row (format in formats.md).
-5. **Validate.** Run `CONISO validate-plan .coniso/assignments/<track>-w<n>.md` and fix every finding until it prints `PLAN OK`. Never send its findings to the auditor.
-6. **Audit.** Spawn `coniso:auditor` with model `sonnet` and prompt `AUDIT delegation .coniso/assignments/<track>-w<n>.md · context: .coniso/sprint.json`.
+3. Run `CONISO dispatch <ids> --from <track> --plan <track>-w<n> --review <lead|self> [--specialty <id>=<name>,…]`, with `lead` when your assignment says a Review Lead serves. Per ticket it follows the formation: a lead assignment for a team (WORKDIR the repo root, the lead makes its worktree), or a worktree and an engineer assignment for a solo ticket. It writes the delegation table, validates it, and prints the `SPAWN` lines.
+   - The specialty is yours to choose from the ticket content (builder by default; specialties in `.coniso/specialties/` take precedence when they fit).
+   - For track notes or any other change, edit the generated files, then run `CONISO validate-plan .coniso/assignments/<track>-w<n>.md` until it prints `PLAN OK`. Never send its findings to the auditor.
+4. Read the PLAN line. `MATCHES SCHEDULE` means every row is what the schedule planned: skip step 5.
+5. **Audit.** Spawn `coniso:auditor` with model `sonnet` and prompt `AUDIT delegation .coniso/assignments/<track>-w<n>.md · context: .coniso/sprint.json`.
    - Answer each objection in the table: `O<n> accepted` (and fix the assignments) or `O<n> overruled: <reason>`.
    - Then run `CONISO ledger add --unit <track>-w<n> --leader manager --kind delegation --raised N --accepted A --overruled O`.
    - Skip the audit only when you dispatch exactly one unit exactly as the schedule planned it.
 
 ## Execute
-7. Spawn every unit in one message: `subagent_type` `coniso:lead` or `coniso:engineer`, `model` per assignment, prompt `Assignment: <assignment path>`.
+7. Spawn the printed `SPAWN` lines in one message.
 8. As returns arrive:
-   - **Leads** set their own ticket state.
-   - **Solo engineer `done`:** run `CONISO set <id> built --note "<phrase>"`.
+   - **Leads and solo engineers** set their own ticket state (`built`).
    - **`partial`/`failed`:** retry once with a tightened assignment via SendMessage. A second failure stays `failed` with a note; the Director escalates.
    - **FLAGS** needing a decision outside your track go in your return.
 9. **Review, only if your assignment says `REVIEW: dispatch your own reviewer`** (no Review Lead serves):
-   - Dispatch reviewers per each ticket's `review_plan`.
-   - Rule on the verdicts as the playbook says (any blocker fails; minors never fail; a verdict missing evidence is void).
-   - Have a sonnet auditor check your rulings (`AUDIT verdict …`) and log them to the ledger.
-   - Then run `CONISO set <id> passed|failed --verdict … --note …`.
+   - Run `CONISO review <ids> --from <track>` and spawn the printed lines.
+   - Each reviewer's `RULING:` line is `RULED` (state set) or `NEEDS RULING`, which is yours: rule as the playbook says (a verdict missing evidence is void; a major fails unless the panel majority passes it), then `CONISO set <id> passed|failed --verdict … --note …`.
+   - Have a sonnet auditor check your own rulings and any `verdict audit required` ruling (`AUDIT verdict …`), and log them to the ledger.
 
 ## Return (at most 12 lines)
 ```

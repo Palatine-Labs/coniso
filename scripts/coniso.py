@@ -408,7 +408,7 @@ def sprint_ticket(rt, internal_deps, ext_deps, adhoc=False):
          "model": rt.get("model") or "sonnet", "effort": rt.get("effort"), "review": bool(rt.get("review")),
          "deps": internal_deps, "ext_deps": ext_deps, "adhoc": adhoc, "gate": is_gate(rt),
          "state": "queued", "attempts": 0, "wave": None, "wt": None, "branch": None, "base": None,
-         "merged_sha": None, "verdict": None, "history": []}
+         "merged_sha": None, "verdict": None, "history": [], "accept_n": len(rt.get("accept") or [])}
     t["formation"] = formation(t)
     t["review_plan"] = review_plan(t)
     return t
@@ -1492,6 +1492,37 @@ def validate_plan(plan_path, slots=None, check_files=True):
     return findings, summary
 
 
+def schedule_match(plan_path):
+    """True when every row is a ticket-level unit whose model and formation equal the scheduled plan, with a
+    script-generated assignment. Such a plan holds no judgment call for the delegation auditor (D1, D2, D4, D8 were
+    settled by the roadmap and the schedule). Packet plans inside a ticket never match: splitting is judgment."""
+    c = load_sprint(required=False)
+    _, rows = parse_plan(plan_path.read_text(encoding="utf-8"))
+    if not c or not rows:
+        return False
+    tracks = {tr["id"] for tr in c.get("tracks") or []}
+    for r in rows:
+        unit, model, role = r["unit"].strip("` "), r.get("model", "").strip("` ").lower(), r.get("role", "").lower()
+        base, _, sub = unit.partition(".")
+        t = c["tickets"].get(base)
+        f_ = (t or {}).get("formation") or {}
+        if unit in tracks:
+            ok = role.startswith("manager") and model == "opus"
+        elif t and not sub:
+            ok = f_.get("kind") == "team" and role.startswith("lead") and model == f_.get("lead")
+        elif t and sub == "E1":
+            ok = f_.get("kind") == "solo" and role.startswith("engineer") and model == f_.get("model")
+        elif t and re.fullmatch(r"R\d+", sub):
+            allowed = {rv["model"] for rv in t["review_plan"]["reviewers"]} | ({"sonnet"} if t.get("attempts") else set())
+            ok = role.startswith("reviewer") and model in allowed
+        else:
+            ok = False
+        af = L / "assignments" / f"{unit}.md"
+        if not ok or not af.exists() or GEN_MARK not in af.read_text(encoding="utf-8"):
+            return False
+    return True
+
+
 def cmd_validate_plan(a):
     path = Path(a.plan)
     if not path.is_absolute():
@@ -1689,6 +1720,424 @@ def cmd_close(a):
         if left:
             print(f"Not merged (back in the roadmap pool): {', '.join(left)}")
 
+
+
+# ---------------------------------------------------------------- compound commands (dispatch, review, verdict, land)
+# Each one replaces several Director tool calls with one, so the main session's context grows slower.
+
+GEN_MARK = "GENERATED: coniso"
+
+
+class redirect_out:
+    """Capture a sub-command's stdout, so compound commands print only their own summary."""
+
+    def __enter__(self):
+        import io
+        self.old, sys.stdout = sys.stdout, io.StringIO()
+        self.text = ""
+        return self
+
+    def __exit__(self, *exc):
+        self.text, sys.stdout = sys.stdout.getvalue(), self.old
+
+
+def accept_count(tid, t):
+    if t.get("accept_n") is not None:
+        return t["accept_n"]
+    f = L / "tickets" / f"{safe(tid)}.md"
+    n, sec = 0, False
+    if f.exists():
+        for ln in f.read_text(encoding="utf-8").splitlines():
+            if ln.startswith("## "):
+                sec = ln.startswith("## Done when")
+            elif sec and re.match(r"\d+\.\s", ln):
+                n += 1
+    return n
+
+
+def accept_range(n):
+    return f"acceptance items 1-{n}" if n > 1 else ("acceptance item 1" if n == 1 else "the ticket's objective")
+
+
+def specialty_files(spec):
+    own = L / "specialties" / f"{spec}.md"
+    out = [p(own if own.exists() else L / "ref" / "specialties" / f"{spec}.md")]
+    fb = ROOT / "docs" / "agent-feedback" / f"{spec}.md"
+    if fb.exists():
+        out.append(p(fb))
+    return out
+
+
+def write_assignment(unit, head, fields, rewrite):
+    """Write .coniso/assignments/<unit>.md with the formats.md fields. Keeps an existing file unless rewrite."""
+    f = L / "assignments" / f"{unit}.md"
+    if f.exists() and not rewrite:
+        return f, "kept"
+    body = [head] + [f"{k}: {v}" for k, v in fields if v] + [GEN_MARK]
+    f.write_text("\n".join(body) + "\n", encoding="utf-8")
+    return f, "written"
+
+
+def spawn_line(agent, model, path):
+    return f"SPAWN {agent} · model {model} · prompt: Assignment: {p(path)}"
+
+
+def write_table(name, rows, review, used, allowed):
+    lines = ["| Unit | Role/specialty | Model | Step | Owns | Needs (inputs/order) | Done when |",
+             "|------|----------------|-------|------|------|----------------------|-----------|"]
+    lines += ["| " + " | ".join(r) + " |" for r in rows]
+    lines += [f"Review: {review}   Slots: {used}/{allowed}", "Auditor: "]
+    f = L / "assignments" / f"{name}.md"
+    f.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return f
+
+
+def check_table(f):
+    findings, summary = validate_plan(f)
+    if findings:
+        print(f"PLAN FAIL {f.name}: {summary}")
+        for rule, unit, text in findings[:10]:
+            print(f"  {rule} · {unit} — {text}")
+        sys.exit(1)
+    match = schedule_match(f)
+    print(f"PLAN OK {f.name}: {summary}" + (" · MATCHES SCHEDULE" if match else " · deviates from the schedule: audit it"))
+
+
+def parse_specialties(arg, ids):
+    out = {tid: "builder" for tid in ids}
+    for part in (arg or "").split(","):
+        part = part.strip()
+        if "=" in part:
+            k, v = part.split("=", 1)
+            out[k.strip()] = v.strip()
+        elif part:
+            out = {tid: part for tid in ids}
+    return out
+
+
+def cmd_dispatch(a):
+    """Worktree, assignment file and exact spawn line per ticket; a validated wave table when there are several."""
+    conf = cfg()
+    c = load_sprint()
+    ids = [x for x in ",".join(a.ids).split(",") if x]
+    specs = parse_specialties(a.specialty, ids)
+    rows, spawns, used = [], [], 0
+    cmd = conf["cmd"]
+    for tid in ids:
+        t = ticket(c, tid)
+        if t["state"] in TERMINAL:
+            die(f"{tid} is {t['state']}")
+        waiting = [d for d in t["deps"] if c["tickets"].get(d, {}).get("state") != "merged"]
+        if waiting and not a.force:
+            die(f"{tid} waits on {', '.join(waiting)} (not merged); dispatch it after they land")
+        f_ = t["formation"]
+        n = accept_count(tid, t)
+        packet = p(L / "tickets" / f"{safe(tid)}.md")
+        fix = L / "reports" / f"{safe(tid)}.fix.md"
+        inputs = packet + (f" · fix list {p(fix)}" if fix.exists() else "")
+        bounds = "This ticket only: nothing from other tickets or later work. Never run git or edit the roadmap or the brief."
+        if f_["kind"] == "solo":
+            if conf.get("worktrees", True):
+                with redirect_out():
+                    cmd_wt(argparse.Namespace(action="add", id=tid, force=False))
+                workdir = load_sprint()["tickets"][tid]["wt"]
+            else:
+                workdir = p(ROOT)
+            unit, spec = f"{tid}.E1", specs.get(tid, "builder")
+            read = " · ".join([p(L / "BRIEF.md"), packet] + specialty_files(spec))
+            path, how = write_assignment(unit, f"ASSIGNMENT {unit} · engineer/{spec} · model {f_['model']} · from {a.from_}", [
+                ("READ FIRST", read), ("WORKDIR", p(workdir)),
+                ("OBJECTIVE", f"Build ticket {tid} ({t['title']}) so every acceptance item is met, with evidence."),
+                ("OWNS", "** (solo: the whole ticket inside WORKDIR)"), ("INPUTS", inputs), ("BOUNDARIES", bounds),
+                ("DONE WHEN", f"{accept_range(n)} met, each with evidence (test name or file:line); `{cmd} test {tid}` passes."),
+                ("ON DONE", f"after the test passes run `{cmd} set {tid} built --note \"<one phrase>\"` (solo ticket: you record built)."),
+                ("RETURN", f"standard return + detail in {p(L / 'reports' / (unit + '.md'))}")], a.rewrite)
+            rows.append([unit, f"engineer/{spec}", f_["model"], "1", "**", f"ticket {tid}", accept_range(n)])
+            spawns.append(spawn_line("coniso:engineer", f_["model"], path))
+        else:
+            unit = tid
+            review = "review lead serves" if a.review == "lead" else "dispatch your own reviewer"
+            path, how = write_assignment(unit, f"ASSIGNMENT {unit} · lead · model {f_['lead']} · from {a.from_}", [
+                ("READ FIRST", f"{p(L / 'BRIEF.md')} · {packet}"), ("WORKDIR", p(ROOT)),
+                ("OBJECTIVE", f"Deliver ticket {tid} ({t['title']}) built, tested and handed off with evidence for every acceptance item."),
+                ("OWNS", f"ticket {tid}"), ("INPUTS", inputs), ("BOUNDARIES", bounds),
+                ("DONE WHEN", f"{accept_range(n)} evidenced; `{cmd} validate-handoff {tid}` prints HANDOFF OK; state built."),
+                ("REVIEW", review), ("SLOTS", str(f_["engineers"])),
+                ("ENGINEERS", f"up to {f_['engineers']} (default engineer model {f_.get('engineer_model', 'sonnet')})"),
+                ("RETURN", f"standard return + detail in {p(L / 'reports' / (tid + '.md'))}")], a.rewrite)
+            rows.append([unit, "lead", f_["lead"], "1", f"ticket {tid}", f"ticket {tid}", accept_range(n)])
+            spawns.append(spawn_line("coniso:lead", f_["lead"], path))
+        used += cost(f_)
+        if how == "kept":
+            print(f"  kept existing {path.name} (--rewrite regenerates it)")
+    if len(ids) > 1 or a.plan:
+        wave = min((c["tickets"][i].get("wave") or 0) for i in ids)
+        name = a.plan or f"{a.from_}-w{wave}"
+        review = "Review Lead" if a.review == "lead" else "each leader dispatches its own reviewer"
+        check_table(write_table(name, rows, review, used, c.get("budget") or conf["slots"]))
+    print("\n".join(spawns))
+
+
+def next_reviewer_n(tid):
+    n = 1
+    while (L / "assignments" / f"{tid}.R{n}.md").exists():
+        n += 1
+    return n
+
+
+def cmd_review(a):
+    """Sync each ticket with main, write reviewer assignments per review_plan, set reviewing, print spawn lines."""
+    conf = cfg()
+    ids = [x for x in ",".join(a.ids).split(",") if x]
+    cmd = conf["cmd"]
+    c = load_sprint()
+    for tid in ids:
+        t = ticket(c, tid)
+        if t["state"] not in ("built", "reviewing") and not a.force:
+            die(f"{tid} is {t['state']}; review takes built tickets")
+        if a.tokens:
+            with Lock():
+                c2 = load_sprint()
+                note(ticket(c2, tid), t["state"], "builder tokens", a.tokens, a.role or "engineer")
+                save_sprint(c2)
+        if conf.get("worktrees", True) and t.get("wt") and not a.no_sync:
+            r = redirect_out()
+            try:
+                with r:
+                    cmd_sync(argparse.Namespace(id=tid, cont=False))
+            except SystemExit as e:
+                print(r.text.strip())
+                print(f"Review not dispatched: send {tid}'s builder the conflict (resolve, sync {tid} --continue, test, set built), then review again.")
+                sys.exit(e.code or 3)
+    c = load_sprint()
+    batch = [tid for tid in ids if c["tickets"][tid]["review_plan"]["kind"] == "batch"
+             and not (c["tickets"][tid]["attempts"] or a.delta)]
+    groups = ([batch] if len(batch) > 1 else []) + [[tid] for tid in ids if not (len(batch) > 1 and tid in batch)]
+    rows, spawns, plans = [], [], {}
+    for group in groups:
+        first = group[0]
+        t = c["tickets"][first]
+        delta = a.delta or t["attempts"] > 0
+        if delta:   # playbook: re-reviews get one reviewer on the fix list and the files it touched
+            reviewers = [{"model": a.model or "sonnet", "lens": "spec+regression"}]
+        elif a.panel and (a.panel == "*" or first in a.panel.split(",")) and t["review_plan"]["kind"] != "panel":
+            reviewers = review_plan(dict(t, review=True))["reviewers"]
+        else:
+            reviewers = t["review_plan"]["reviewers"]
+        n0 = next_reviewer_n(first)
+        panel = len(reviewers) > 1
+        units = []
+        packets = " · ".join(p(L / "tickets" / f"{safe(x)}.md") for x in group)
+        items = ", ".join(f"{x} {accept_range(accept_count(x, c['tickets'][x]))}" for x in group)
+        for k, rv in enumerate(reviewers):
+            unit = f"{first}.R{n0 + k}"
+            units.append(unit)
+            fix = L / "reports" / (f"{safe(first)}.{unit}.fix.md" if panel else f"{safe(first)}.fix.md")
+            rep = L / "reports" / f"{unit}.md"
+            inputs = packets
+            if delta:
+                prev = [x for x in sorted((L / "reports").iterdir())
+                        if re.fullmatch(re.escape(safe(first)) + r"\.R\d+\.md", x.name) and x.name != rep.name]
+                inputs += f" · fix list {p(L / 'reports' / (safe(first) + '.fix.md'))}" + "".join(f" · earlier review {p(x)}" for x in prev)
+            path, _ = write_assignment(unit, f"ASSIGNMENT {unit} · reviewer · model {rv['model']} · from {a.from_}", [
+                ("READ FIRST", f"{p(L / 'BRIEF.md')} · {packets}"), ("WORKDIR", p(t.get("wt") or ROOT)),
+                ("OBJECTIVE", f"Verify {', '.join(group)} against the acceptance items and the brief through lens {rv['lens']}, and return an evidence-backed verdict."),
+                ("OWNS", f"{p(rep)}, {p(L / 'reports' / unit)}/**, {p(fix)}"), ("LENS", rv["lens"]),
+                ("SCOPE", "delta" if delta else "full"), ("INPUTS", inputs),
+                ("BOUNDARIES", "Never edit WORKDIR files or run git; probes only under your reports folder."),
+                ("DONE WHEN", f"a verdict per formats.md in your report, with {items} each marked met or unmet with evidence. "
+                              f"Then run `{cmd} verdict {','.join(group)} --report {p(rep)}` and put the line it prints in your return."),
+                ("RETURN", f"verdict return (formats.md) + detail in {p(rep)}")], True)
+            rows.append([unit, f"reviewer/{rv['lens']}", rv["model"], "1",
+                         f".coniso/reports/{unit}.md, .coniso/reports/{unit}/**, .coniso/reports/{fix.name}",
+                         ", ".join(f"ticket {x}" for x in group), "verdict"])
+            spawns.append(spawn_line("coniso:reviewer", rv["model"], path))
+        for x in group:
+            plans[x] = units
+    with Lock():
+        c = load_sprint()
+        for x, units in plans.items():
+            t = c["tickets"][x]
+            t["review_round"] = {"units": units, "verdicts": {}}
+            t["state"] = "reviewing"
+            note(t, "reviewing", f"reviewers {', '.join(units)}")
+        save_sprint(c)
+    if len(rows) > 1 or a.plan:
+        check_table(write_table(a.plan or f"{ids[0]}-review", rows, "this table's reviewers", len(rows), conf.get("review_slots", 4)))
+    print(f"REVIEWING {', '.join(ids)}")
+    print("\n".join(spawns))
+
+
+VERDICT_RE = re.compile(r"^\s*VERDICT\s+(\S+)\s*[·|]\s*(\S+)\s*[·|]\s*lens\s+(.+?):\s*(pass-with-fixes|pass|fail)\b", re.I)
+ACCEPT_RE = re.compile(r"^\s*[-*]?\s*(A\d+(?:\s*(?:-|–|,|\.\.|and)\s*A?\d+)*)\s+(met|unmet)\b(.*)$", re.I)
+SEV_RE = re.compile(r"\[(blocker|major|minor)\]", re.I)
+
+
+def expand_items(spec):
+    out = set()
+    for part in re.split(r"\s*(?:,|and)\s*", re.sub(r"[Aa]", "", spec)):
+        m = re.fullmatch(r"(\d+)\s*(?:-|–|\.\.)\s*(\d+)", part.strip())
+        if m:
+            out.update(range(int(m.group(1)), int(m.group(2)) + 1))
+        elif part.strip().isdigit():
+            out.add(int(part.strip()))
+    return out
+
+
+def parse_verdicts(text):
+    """VERDICT blocks of a reviewer report, keyed by ticket: stated verdict, items met/unmet, evidence gaps, severities."""
+    blocks, cur, in_findings = {}, None, False
+    for ln in text.splitlines():
+        m = VERDICT_RE.match(ln)
+        if m:
+            cur = {"unit": m.group(2), "stated": m.group(4).lower(), "met": set(), "unmet": set(),
+                   "no_evidence": set(), "blocker": 0, "major": 0, "minor": 0, "fix": None}
+            blocks[m.group(1)] = cur
+            in_findings = False
+            continue
+        if cur is None:
+            continue
+        s = ln.strip()
+        head, _, rest = s.partition(":")
+        head = head.strip("-* ").upper()
+        if head in ("TESTS", "FIX LIST", "REPORT"):
+            in_findings = False
+            if head == "FIX LIST":
+                v = rest.strip().split()[0] if rest.strip() else ""
+                cur["fix"] = None if v.lower() in ("", "none", "-", "n/a") else v
+            continue
+        if head == "FINDINGS":
+            in_findings, s = True, rest
+        am = None if in_findings else ACCEPT_RE.match(ln)
+        if am:
+            items = expand_items(am.group(1))
+            ev = am.group(3).strip().lstrip("—–-:· ").strip()
+            (cur["met"] if am.group(2).lower() == "met" else cur["unmet"]).update(items)
+            if not ev or ev.lower() in ("none", "n/a", "-", "tbd"):
+                cur["no_evidence"].update(items)
+        elif in_findings and "suspicion" not in s.lower():
+            for sev in SEV_RE.findall(s):
+                cur[sev.lower()] += 1
+    return blocks
+
+
+def rule_round(vs):
+    """Mechanical ruling over every verdict of a round: ('pass'|'fail', None), or (None, why a leader must rule)."""
+    void = [u for u, v in vs.items() if v["void"]]
+    if void:
+        return None, "void verdict " + "; ".join(f"{u}: {vs[u]['void']}" for u in void) + " (re-run that reviewer once)"
+    stated = {("fail" if v["stated"] == "fail" else "pass") for v in vs.values()}
+    if len(stated) > 1:
+        return None, "panel split: " + ", ".join(f"{u} {v['stated']}" for u, v in vs.items())
+    if any(v["blocker"] or v["unmet"] for v in vs.values()):
+        mech = "fail"
+    elif any(v["major"] for v in vs.values()):
+        return None, "major finding(s) from " + ", ".join(u for u, v in vs.items() if v["major"]) + ": fail unless unsafe-to-merge is ruled out"
+    else:
+        mech = "pass"
+    said = stated.pop()
+    if mech != said:
+        return None, f"the rules give {mech} but the reviewer said {said}"
+    return mech, None
+
+
+def cmd_verdict(a):
+    """Record a reviewer's verdict; when the round is complete, apply the mechanical review rules."""
+    cfg()
+    ids = [x for x in a.ids.split(",") if x]
+    rp = Path(a.report)
+    rp = rp if rp.is_absolute() else ROOT / rp
+    if not rp.exists():
+        die(f"report not found: {a.report}")
+    blocks = parse_verdicts(rp.read_text(encoding="utf-8"))
+    out = []
+    with Lock():
+        c = load_sprint()
+        for tid in ids:
+            t = ticket(c, tid)
+            rnd = t.setdefault("review_round", {"units": [], "verdicts": {}})
+            b = blocks.get(tid)
+            if b is None:
+                unit = a.unit or rp.stem
+                rec = {"stated": "?", "void": "no VERDICT line for this ticket", "blocker": 0, "major": 0, "minor": 0, "unmet": 0}
+            else:
+                unit = b["unit"]
+                missing = sorted(set(range(1, accept_count(tid, t) + 1)) - b["met"] - b["unmet"])
+                void = (["no verdict for A" + ",A".join(map(str, missing))] if missing else []) + \
+                       (["no evidence for A" + ",A".join(map(str, sorted(b["no_evidence"])))] if b["no_evidence"] else [])
+                rec = {"stated": b["stated"], "void": "; ".join(void), "blocker": b["blocker"], "major": b["major"],
+                       "minor": b["minor"], "unmet": len(b["unmet"]), "fix": b["fix"]}
+            rec["report"] = p(rp)
+            rnd["verdicts"][unit] = rec
+            if unit not in rnd["units"]:
+                rnd["units"].append(unit)
+            pending = [u for u in rnd["units"] if u not in rnd["verdicts"]]
+            if pending:
+                out.append(f"RECORDED {tid} {unit} {rec['stated']}; waiting on {', '.join(pending)}")
+                continue
+            vs = rnd["verdicts"]
+            ruling, why = rule_round(vs)
+            main_fix = L / "reports" / f"{safe(tid)}.fix.md"
+            if ruling == "fail":
+                parts = sorted(x for x in (L / "reports").iterdir()
+                               if re.fullmatch(re.escape(safe(tid)) + r"\.[^.]+\.R\d+\.fix\.md", x.name))
+                if parts:   # a panel's fix lists become one
+                    main_fix.write_text("\n\n".join(f"<!-- {x.name} -->\n" + x.read_text(encoding="utf-8") for x in parts), encoding="utf-8")
+                if not main_fix.exists():
+                    ruling, why = None, f"fail without a fix list: the reviewer must write .coniso/reports/{main_fix.name}"
+            summary = "; ".join(f"{u} {v['stated']} b{v['blocker']} M{v['major']} m{v['minor']}" for u, v in vs.items())
+            if ruling is None:
+                note(t, t["state"], f"needs ruling: {why}")
+                out.append(f"NEEDS RULING {tid}: {why} · reports: " + ", ".join(sorted({v['report'] for v in vs.values()})))
+                continue
+            minors = sum(v["minor"] for v in vs.values())
+            t["state"], t["verdict"] = ("passed" if ruling == "pass" else "failed"), ruling
+            text = f"ruled {ruling}: {summary}" + (f"; {minors} minor(s) carried as notes" if ruling == "pass" and minors else "") \
+                + (f"; fix list .coniso/reports/{main_fix.name}" if ruling == "fail" else "")
+            note(t, t["state"], text)
+            (L / "reports" / f"{safe(tid)}.ruling.md").write_text(f"{tid} {text}\n", encoding="utf-8")
+            audit = ruling == "fail" or t.get("model") == "opus" or t.get("review")
+            out.append(f"RULED {ruling} {tid} — {summary}" + (" · verdict audit required (playbook)" if audit else ""))
+        save_sprint(c)
+    print("\n".join(out))
+
+
+def cmd_land(a):
+    """Merge passed tickets in dependency order; run roadmap-sync once their wave has nothing in flight."""
+    conf = cfg()
+    c = load_sprint()
+    ids = [x for x in ",".join(a.ids).split(",") if x]
+    order = sorted(ids, key=lambda x: (ticket(c, x).get("wave") or 0, len(c["tickets"][x]["deps"]), x))
+    if a.tokens:
+        with Lock():
+            c2 = load_sprint()
+            note(ticket(c2, order[0]), c2["tickets"][order[0]]["state"], "reviewer tokens", a.tokens, a.role or "reviewer")
+            save_sprint(c2)
+    for tid in order:
+        r = redirect_out()
+        try:
+            with r:
+                cmd_merge(argparse.Namespace(id=tid, force=False, no_test=False, keep=False))
+        except SystemExit as e:
+            print(r.text.strip())
+            sys.exit(e.code or 1)
+        print("\n".join(x for x in r.text.splitlines() if x.startswith(("MERGED", "Now ready"))))
+    c = load_sprint()
+    waves = sorted({c["tickets"][x].get("wave") or 0 for x in order})
+    busy = [tid for tid, t in c["tickets"].items() if (t.get("wave") or 0) in waves and t["state"] in ACTIVE]
+    if busy:
+        print(f"Wave still in flight: {', '.join(busy)}; roadmap-sync waits for it")
+        return
+    with Lock():
+        c = load_sprint()
+        landed = c.setdefault("waves_landed", [])
+        landed += [w for w in waves if w not in landed]
+        save_sprint(c)
+    if conf.get("roadmap"):
+        cmd_roadmap_sync(argparse.Namespace(dry_run=False, no_commit=False, force=False))
+    k = len(landed)
+    print(f"WAVE {','.join(map(str, waves))} landed · {k} wave(s) merged this sprint"
+          + (" · RESTART POINT (see director.md, Long sessions)" if k % 3 == 0 else ""))
 
 
 # ---------------------------------------------------------------- roadmap (works with or without .coniso)
@@ -1936,6 +2385,11 @@ def cmd_roadmap(a):
 # ---------------------------------------------------------------- cli
 
 def main():
+    for stream in (sys.stdout, sys.stderr):    # Windows consoles default to cp1252, which cannot print · or →
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
     ap = argparse.ArgumentParser(prog="coniso", description="Coniso sprint control")
     sp = ap.add_subparsers(dest="cmd", required=True)
 
@@ -2048,6 +2502,41 @@ def main():
     s.add_argument("--slots", type=int, help="slot limit (default: the plan's 'Slots: used/allowed' line)")
     s.add_argument("--no-files", action="store_true", help="skip D5 (assignment files not written yet)")
     s.set_defaults(fn=cmd_validate_plan)
+
+    s = sp.add_parser("dispatch", help="worktree + assignment + spawn line per ready ticket (a validated wave table when several)")
+    s.add_argument("ids", nargs="+")
+    s.add_argument("--specialty", help="solo engineer specialty: a name, or id=name,id=name")
+    s.add_argument("--review", choices=["lead", "self"], default="self", help="lead: a Review Lead serves; self: leads dispatch their own reviewer")
+    s.add_argument("--from", dest="from_", default="director", help="leader unit, e.g. director or T1")
+    s.add_argument("--plan", help="wave table name (default <from>-w<wave> when several tickets)")
+    s.add_argument("--rewrite", action="store_true", help="regenerate assignment files that already exist")
+    s.add_argument("--force", action="store_true", help="dispatch although dependencies are not merged")
+    s.set_defaults(fn=cmd_dispatch)
+
+    s = sp.add_parser("review", help="sync with main, write reviewer assignments per review_plan, set reviewing, print spawn lines")
+    s.add_argument("ids", nargs="+")
+    s.add_argument("--delta", action="store_true", help="one reviewer, SCOPE delta (automatic after a fix round)")
+    s.add_argument("--panel", nargs="?", const="*", help="upgrade to a panel: all tickets, or the comma-listed ids (never downgrades)")
+    s.add_argument("--model", choices=["sonnet", "opus"], help="delta reviewer model (default sonnet)")
+    s.add_argument("--plan", help="review table name (default <id>-review when there are several reviewers)")
+    s.add_argument("--from", dest="from_", default="director")
+    s.add_argument("--no-sync", action="store_true")
+    s.add_argument("--force", action="store_true")
+    s.add_argument("--tokens", type=int, help="the builder's reported tokens, recorded on the ticket")
+    s.add_argument("--role", help="role for --tokens (default engineer)")
+    s.set_defaults(fn=cmd_review)
+
+    s = sp.add_parser("verdict", help="record a reviewer verdict and apply the mechanical ruling rules")
+    s.add_argument("ids", help="ticket id, or comma-separated ids for a batch review")
+    s.add_argument("--report", required=True)
+    s.add_argument("--unit", help="reviewer unit when the report has no VERDICT line")
+    s.set_defaults(fn=cmd_verdict)
+
+    s = sp.add_parser("land", help="merge passed tickets; roadmap-sync when their wave has nothing in flight")
+    s.add_argument("ids", nargs="+")
+    s.add_argument("--tokens", type=int, help="the reviewer's reported tokens, recorded on the first ticket")
+    s.add_argument("--role", help="role for --tokens (default reviewer)")
+    s.set_defaults(fn=cmd_land)
 
     s = sp.add_parser("roadmap-sync")
     s.add_argument("--dry-run", action="store_true")

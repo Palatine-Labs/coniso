@@ -42,11 +42,10 @@ You are a **Lead**: you run one team that builds one ticket. You plan the work, 
 11. Run `CONISO set <id> built --note "<phrase>"`.
 
 ## Review — only when your assignment says `REVIEW: dispatch your own reviewer`
-12. Write reviewer assignments: lens and model from `CONISO status <id> --json` → `review_plan`, ticket, WORKDIR. Spawn one `coniso:reviewer` (a panel if the plan says so).
-    - Then rule: pass, or fail with its fix list.
-    - Write the ruling into `.coniso/reports/<id>.md`. Have the same-tier auditor check it (`AUDIT verdict …`), resolve, and log with `--kind verdict`.
-    - Run `CONISO set <id> passed|failed --verdict … --note …`.
-    - On fail, run one fix round (steps 7–11), then re-review once.
+12. Run `CONISO review <id> --from <id>` (chained after step 11 with `&&`). It syncs with main, writes the reviewer assignment(s) per `review_plan`, sets `reviewing`, and prints the `SPAWN` line(s). Spawn them in one message.
+    - Each reviewer's return carries a `RULING:` line from `CONISO verdict`. `RULED pass|fail` has set the state already. `NEEDS RULING` is yours: rule per the playbook (void → re-run that reviewer once; a major fails unless the panel majority passes it), then run `CONISO set <id> passed|failed --verdict … --note …`.
+    - When you ruled, or the line says `verdict audit required`, write the ruling into `.coniso/reports/<id>.md` and have the same-tier auditor check it (`AUDIT verdict …`); resolve, and log with `--kind verdict`.
+    - On fail, run one fix round (steps 7–11), then `CONISO review <id> --from <id>` again (it sends one delta reviewer).
 
 ## Follow-up work (resumed with SendMessage)
 - **Fix list:**

@@ -25,15 +25,18 @@ INPUTS: <paths, prior reports — pointers only, never pasted content>
 BOUNDARIES: <out of scope; decisions that are not yours>
 DONE WHEN: <testable criteria — for a ticket, its acceptance items by number>
 SCOPE: full | delta   (reviewers only; delta = fix list + files the fix touched; omit for full)
+LENS: <lens>                                                 (reviewers only)
+ON DONE: <CONISO set <id> built …>                           (solo engineers only: they record built themselves)
 REVIEW: <review lead serves | dispatch your own reviewer>   (leaders only)
 SLOTS: <max concurrent subordinates>                         (leaders only)
 RETURN: standard return + detail in .coniso/reports/<unit>.md
 ```
+- `CONISO dispatch` (engineers and leads) and `CONISO review` (reviewers) write these files with every field filled and a closing `GENERATED: coniso` line. Write one by hand only for managers, a lead's engineers, quick tasks and scouts.
 - If a haiku engineer could misread the packet, it is under-specified.
 - If it needs more than 5 lines of background, the background belongs in the brief or a track note.
 
 ## Spawn prompt
-A single line with the absolute path: `Assignment: <repo root>/.coniso/assignments/<unit>.md`. Use `subagent_type: coniso:<role>` and pass `model`.
+A single line with the absolute path: `Assignment: <repo root>/.coniso/assignments/<unit>.md`. Use `subagent_type: coniso:<role>` and pass `model`. `dispatch` and `review` print it ready to use: `SPAWN coniso:<role> · model <m> · prompt: Assignment: <path>`.
 Inside assignment files, write every path as absolute (repo root from the brief header), because agents' file tools need absolute paths.
 
 ## Standard return — every agent's final message, at most 12 lines
@@ -73,15 +76,17 @@ The leader then:
 1. writes `O<n> accepted` or `O<n> overruled: <reason>` into the audited file;
 2. runs `CONISO ledger add --unit <u> --leader <role> --kind <kind> --raised N --accepted A --overruled O [--reason "O2: …"]`.
 
-## Verdict — a reviewer's return body, also in its report
+## Verdict — a reviewer's return body, also at the top of its report
 ```
 VERDICT <ticket> · <reviewer unit> · lens <lens>: pass | pass-with-fixes | fail
 A1 met — <evidence: test name / file:line / log line>
 A2 unmet — <evidence>
-FINDINGS: [blocker|major|minor] <claim> — <evidence>
+FINDINGS: [blocker|major|minor] <claim> — <evidence>   (one per line; "suspicion" marks one without evidence)
 TESTS: <CONISO test result · log path>
 FIX LIST: .coniso/reports/<ticket>.fix.md   (fail only)
+RULING: <line printed by CONISO verdict>
 ```
+`CONISO verdict <id> --report <file>` parses this block. It voids a verdict that skips an acceptance item or gives one no evidence; any blocker or unmet item fails; minors never fail. It prints `RULED pass|fail` when those rules settle the round, and `NEEDS RULING: <reason>` for a panel split, a major, a void, or a reviewer verdict the rules contradict.
 
 ## Fix list — `.coniso/reports/<ticket>.fix.md`
 Number each problem and give for each:
