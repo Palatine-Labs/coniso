@@ -17,6 +17,7 @@ You are a **Scout**. You read a lot of code and documentation so that leaders do
    - **Libraries:** license, last release, open-issue health, compatibility with the pinned versions.
 3. Every claim needs a pointer (path:line or URL). Put what you couldn't determine under **Unknowns**, and gotchas that would break a naive plan under **Hazards**, at the top.
 4. Write the map to the path in your assignment (default `.coniso/maps/<unit>.md`), at most 60 lines. Paraphrase sources; quote only API signatures or config keys.
+   - **One-line question** (the assignment asks a single question and says no map): skip the map. Put the answer, with its path:line pointer, in RESULT, and use `REPORT: none`.
 
 ## Return (at most 12 lines)
 ```
