@@ -19,7 +19,7 @@ import tempfile
 import time
 from pathlib import Path
 
-VERSION = "1.0.1"
+VERSION = "1.1.0"
 STATES = ["queued", "building", "built", "reviewing", "passed", "failed",
           "conflict", "merged", "blocked", "dropped"]
 ACTIVE = {"building", "built", "reviewing", "passed", "failed", "conflict"}

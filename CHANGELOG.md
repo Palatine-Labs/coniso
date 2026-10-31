@@ -7,8 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-10-31
+
+A context-and-usage pass: fewer Director tool calls, fewer auditor round-trips that judge nothing, and less text in every long-lived context. Isolation is unchanged: one packet per agent, files carry the detail, 12-line returns.
+
 ### Added
+- **Compound commands.** `dispatch` (worktree, complete assignment from the formats.md template, validated wave table, spawn lines), `review` (sync with main, reviewer assignments per review plan including panels, haiku batches and delta re-reviews, spawn lines), `verdict` (records a reviewer's verdict and applies the mechanical rules: any blocker or unmet item fails, minors never fail, missing evidence voids; prints `RULED` or `NEEDS RULING`) and `land` (merge in dependency order, then roadmap-sync once the wave is clear).
+- **Token capture.** `set <id> --tokens N --role R` (state optional) records reported subagent tokens; `retro` totals them per ticket and per role. `review` and `land` take `--tokens` too.
+- `validate-plan` prints `MATCHES SCHEDULE` when every row is the scheduled ticket-level plan with script-written assignments; leaders skip the delegation audit then. Lead packet plans never match.
+- `validate-handoff <id>` replaces the lead's hand-off audit: evidence per acceptance item, an existing passing test log, no unlisted `[VERIFY]`/TODO added in the diff.
+- `brief-trim` moves Decisions log rows older than the sprint to `.coniso/maps/decisions.md`; `preflight` warns when the brief's core exceeds 150 lines.
+- `status <id> --field <name>`; `retro --lessons`; `retro` flags `docs/agent-feedback/*.md` files over 30 lines.
+- Plugin hook: `SessionStart` (`compact`) prints the open sprint board and current wave; a no-op without an active sprint.
+- Optional `Coniso Quiet` output style (`output-styles/quiet.md`, `keep-coding-instructions: true`, not forced).
+- Test suite under `tests/` (standard-library `unittest`), including a two-ticket end-to-end sprint.
 - `PRIVACY.md` privacy policy, linked from `plugin.json` (`privacyPolicyUrl`) and the README.
+
+### Changed
+- The Director, the Lead call, leads, managers and the Review Lead use the compound commands and chain bookkeeping with `&&`. Solo engineers record `built` themselves; reviewers run `verdict` themselves.
+- Quiet-run rule: the Director writes nothing between tool calls except wave status, user decisions, gates, errors and the final report.
+- The Director never reads project source; premises are checked with one scoped Grep or a one-line haiku scout. Scouts can answer a single question without a map.
+- The Director reads only the last Lessons (`retro --lessons`), restarts after every 3 merged waves, rotates the Review Lead every 3 rounds and managers every 3 waves, and moves fix rounds to a fresh unit above ~100k reported tokens (was ~200k).
+- Manager and Review Lead set `omitClaudeMd: true`; manager, Review Lead and lead set `experimental.cacheTtl: 1h`.
+- `status --json` is compact.
+
+### Fixed
+- The script no longer crashes printing `→` on Windows consoles that default to cp1252.
 
 ## [1.0.1] - 2026-10-30
 
@@ -54,6 +78,7 @@ First public release.
 - **Engineer specialties.** builder, tester, ui, net, level, audio, docs, batch, artisan and synth, plus forging new specialties and a lessons loop (`docs/agent-feedback/`).
 - **Stack-pack mechanism** (`init --stack <name>`) for project-specific rules, specialties, checks, review lens and proving pass. No packs ship in 1.0.0.
 
-[Unreleased]: https://github.com/Palatine-Labs/coniso/compare/v1.0.1...HEAD
+[Unreleased]: https://github.com/Palatine-Labs/coniso/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/Palatine-Labs/coniso/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/Palatine-Labs/coniso/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/Palatine-Labs/coniso/releases/tag/v1.0.0

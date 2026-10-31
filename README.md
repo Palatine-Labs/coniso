@@ -6,7 +6,7 @@ by **Palatine Labs** · pronounced *CON-ih-so* (short for **con**text **iso**lat
 
 > Call a role and it brings its team. Every agent works in a clean, small context, and a deterministic script handles the bookkeeping so no model has to.
 
-**Status: v1.0.** The core is stable and in daily use. Expect sharp edges on uncommon setups. Please report them as [issues](https://github.com/Palatine-Labs/coniso/issues).
+**Status: v1.1.** The core is stable and in daily use. Expect sharp edges on uncommon setups. Please report them as [issues](https://github.com/Palatine-Labs/coniso/issues).
 
 **Claude Code only.** Coniso runs a local Python script, git worktrees and nested subagents, so it needs Claude Code: the terminal, an IDE extension, or the desktop app's Code tab. In claude.ai chat it installs but has nothing to run on. Cowork is untested.
 
@@ -154,8 +154,19 @@ Being straight about this:
   - `/coniso:director … light` halves concurrent builds and uses single reviewers.
   - Prefer `/coniso:lead` for single tickets over a full sprint.
   - When cost has to drop, Coniso cuts breadth (fewer concurrent units) before it ever cuts review.
-- **Idle cost is small:** about 600 tokens per session while installed, whether or not you use it.
+- **The main session stays lean by construction (v1.1):**
+  - **Compound commands.** `dispatch`, `review`, `verdict` and `land` turn the Director's per-ticket bookkeeping (worktree, assignment file, plan validation, review setup, verdict rules, merge, roadmap sync) into a handful of script calls, chained with `&&`. A solo ticket now costs the Director about 5 tool calls instead of about 13.
+  - **Mechanical rules go to the script, not to auditors.** Reviewers record their own verdicts with `verdict`, which applies the ruling rules and asks a leader only when judgment is needed. Plans that are exactly the scheduled plan (`MATCHES SCHEDULE`) and lead hand-offs (`validate-handoff`) are checked without an auditor. Auditors still review every judgment call.
+  - **Quiet run.** The Director writes nothing between tool calls. An optional output style makes that session-wide (below).
+  - **Measured, not guessed.** Each agent's reported token use is recorded per ticket (`--tokens`), and `retro` totals it per ticket and per role.
+  - **Coordinators rotate.** A fresh Review Lead every 3 review rounds, a fresh manager every 3 waves, and a restart point for the Director every 3 merged waves keep long-lived contexts short. All state is on disk.
+- **Idle cost is small:** about 600 tokens per session while installed, whether or not you use it. The compaction hook prints nothing outside an active sprint.
 - **Rule of thumb:** use Coniso on a usage-based plan with headroom or an API budget you've set limits on. Watch your first sprint's usage before running unattended (`permissions --accept-edits`).
+
+## Hooks and output style
+
+- **Compaction hook.** Coniso ships one plugin hook (`hooks/hooks.json`): on `SessionStart` with matcher `compact`, it prints the open sprint board and the current wave, so a Director whose context was just compacted picks up from files instead of memory. In a project without an active sprint (`.coniso/sprint.json`) it prints nothing and exits 0. It runs `python3`, `python` or `py -3`, whichever works, through Claude Code's hook shell (Git Bash on Windows).
+- **Quiet output style (optional).** `Coniso Quiet` (`output-styles/quiet.md`) tells Claude to write nothing between tool calls and speak only for status lines, decisions you own, errors and final reports. It keeps Claude Code's coding instructions and is never forced on. Pick it in `/config` → Output style for long sprints.
 
 ## Commands
 
@@ -186,6 +197,10 @@ Being straight about this:
 | `diff <id>` / `diff --range A..B`, `test <id\|main>` | Diff and test output go to files; the console gets a summary |
 | `sync <id> [--continue]` | Bring main into a ticket's worktree to resolve conflicts |
 | `merge <id>` | Squash, integration test, commit; resets cleanly on conflict or failure |
+| `dispatch <ids> [--specialty …] [--review lead\|self] [--from U] [--plan name] [--rewrite]` | Worktree, complete assignment file and spawn line per ticket; a validated wave table when several |
+| `review <ids> [--panel [ids]] [--delta] [--model opus] [--plan name] [--tokens N]` | Sync with main, reviewer assignments per review plan (batches and delta re-reviews included), set reviewing, spawn lines |
+| `verdict <id[,id]> --report <file>` | Record a reviewer verdict; prints `RULED pass\|fail` when the rules settle it, `NEEDS RULING: <reason>` when a leader must |
+| `land <ids> [--tokens N]` | Merge passed tickets in dependency order; roadmap-sync once their wave is clear; flags a restart point every 3 waves |
 | `ledger add\|stats` | Auditor objection log |
 | `brief-trim [--before YYYY-MM-DD]` | Move Decisions log rows older than the current sprint out of the brief, into `.coniso/maps/decisions.md` |
 | `roadmap-sync`, `retro [--lessons]`, `close` | Write back, report (tokens per ticket and role, oversized feedback files; `--lessons` prints only the last Lessons), archive |
@@ -199,7 +214,7 @@ Being straight about this:
 - `stack.json`, with optional `check_cmd`, `setup_cmd`, `build_cmd` and `review_lens`;
 - `proving.md`, a pass the Director runs after each wave.
 
-`{python}` and `{stack}` in commands expand to the interpreter and the installed pack folder. **v1.0 ships no packs.** The mechanism is there for your own. Contributions are welcome.
+`{python}` and `{stack}` in commands expand to the interpreter and the installed pack folder. **Coniso ships no packs yet.** The mechanism is there for your own. Contributions are welcome.
 
 ## Guarantees and notes
 
