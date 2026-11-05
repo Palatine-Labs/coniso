@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - `PRIVACY.md` privacy policy, linked from `plugin.json` (`privacyPolicyUrl`) and the README.
 
+### Changed
+- README: describe the merge gate's limits, the 12-line return as a rule rather than an enforced limit, the real escalation path, and relay mode in the requirements. Stop presenting unmeasured token savings as fact.
+
 ## [1.0.1] - 2026-10-30
 
 ### Changed
