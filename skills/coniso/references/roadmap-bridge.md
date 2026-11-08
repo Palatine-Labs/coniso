@@ -8,7 +8,7 @@ The roadmap stays the record that carries work from session to session; Coniso i
 | `status` | Only `todo` is scheduled (`--include-progress` adds `progress`). `review` and `done` satisfy dependencies; `--strict` accepts only `done`. |
 | `deps` | Dependencies inside the sprint become wave order. Outside dependencies must be satisfied, or the ticket is excluded with the reason. |
 | gate tickets (title contains "Gate") | Can run, but nothing that depends on one starts until the user marks it `done`. |
-| `size` S/M/L | Formation (solo engineer for S and M; a team of a lead and 3–4 engineers for L) and slot cost. |
+| `size` XS/S/M/L | Formation (a patch engineer plus a light reviewer for XS; solo engineer for S and M; a team of a lead and 3–4 engineers for L) and slot cost. |
 | `model` | Lead model (or solo engineer model). Haiku tickets are batched for review. |
 | `effort` xhigh / `review: true` | Reviewer panel (xhigh also makes S and M tickets a team). |
 | `why` / `what` / `accept` / `prompt` / `modelWhy` / `notes` | Copied into `.coniso/tickets/<id>.md`, the only ticket text agents read. `accept` items become numbered acceptance criteria (A1, A2…). |

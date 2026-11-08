@@ -560,5 +560,233 @@ class RestartPoint(Repo):
             self.assertEqual("RESTART POINT" in out, i == 3, out)
 
 
+class PatchTickets(Repo):
+    schedule = False
+
+    def adhoc_xs(self, tid, title="Fix typo"):
+        return self.c("adhoc", tid, "--title", title, "--size", "XS", "--accept", "the fix is in")
+
+    def test_xs_adhoc_is_a_patch_with_a_light_reviewer(self):
+        out = self.adhoc_xs("Q-fix")
+        self.assertIn("patch(sonnet)", out)
+        self.assertIn("patch Q-fix", out)
+        t = self.sprint()["tickets"]["Q-fix"]
+        self.assertTrue(t["formation"]["patch"])
+        self.assertEqual(t["review_plan"]["kind"], "patch")
+        out = self.c("dispatch", "Q-fix")
+        self.assertIn("SPAWN coniso:engineer · model sonnet", out)
+        self.assertIn("Patch ticket: the smallest change", (self.root / ".coniso" / "assignments" / "Q-fix.E1.md").read_text(encoding="utf-8"))
+        (self.wt("Q-fix") / "fix.txt").write_text("ok\n", encoding="utf-8")
+        self.c("set", "Q-fix", "built")
+        out = self.c("review", "Q-fix")
+        self.assertIn("SPAWN coniso:reviewer-lite · model sonnet", out)
+        self.assertNotIn("PATCH UPGRADED", out)
+        a = (self.root / ".coniso" / "assignments" / "Q-fix.R1.md").read_text(encoding="utf-8")
+        self.assertIn("ASSIGNMENT Q-fix.R1 · reviewer-lite · model sonnet", a)
+        self.assertIn("BUDGET: at most 12 tool calls for this 1-line diff", a)
+        self.assertIn("SCOPE: full", a)
+        self.assertIn("LENS: spec+regression", a)
+
+    def test_oversized_patch_is_promoted_to_the_normal_review(self):
+        self.adhoc_xs("Q-big", "Not small")
+        self.c("dispatch", "Q-big")
+        for i in range(5):
+            (self.wt("Q-big") / f"f{i}.txt").write_text("line\n" * 30, encoding="utf-8")
+        self.c("set", "Q-big", "built")
+        out = self.c("review", "Q-big")
+        self.assertIn("PATCH UPGRADED Q-big: 150 lines across 5 files", out)
+        self.assertIn("SPAWN coniso:reviewer · model sonnet", out)
+        self.assertEqual(self.sprint()["tickets"]["Q-big"]["review_plan"]["kind"], "single")
+        a = (self.root / ".coniso" / "assignments" / "Q-big.R1.md").read_text(encoding="utf-8")
+        self.assertIn("ASSIGNMENT Q-big.R1 · reviewer · model sonnet", a)
+        self.assertIn("BUDGET: at most 25 tool calls for this 150-line diff", a)
+
+    def test_escalated_patch_loses_the_light_review(self):
+        self.adhoc_xs("Q-esc", "Escalates")
+        self.c("set", "Q-esc", "building", "--model", "opus", "--note", "escalated")
+        t = self.sprint()["tickets"]["Q-esc"]
+        self.assertEqual(t["formation"]["kind"], "team")
+        self.assertEqual(t["review_plan"]["kind"], "single")
+
+    def test_roadmap_accepts_xs(self):
+        t = ticket("P1-09", size="XS")
+        t.update(status="todo", checks=[False])
+        self.assertEqual(MOD.validate_roadmap(seed(t)), [])
+        t["size"] = "XL"
+        self.assertTrue(any("size" in e for e in MOD.validate_roadmap(seed(t))))
+
+
+class ReviewBudgets(Repo):
+    tickets = (ticket("P1-01", accept=("a", "b")), ticket("P1-06", model="haiku"), ticket("P1-07", model="haiku"))
+
+    def test_small_full_review_keeps_the_full_reviewer_with_a_small_budget(self):
+        self.build("P1-01")
+        out = self.c("review", "P1-01")
+        self.assertIn("SPAWN coniso:reviewer · model sonnet", out)
+        a = (self.root / ".coniso" / "assignments" / "P1-01.R1.md").read_text(encoding="utf-8")
+        self.assertIn("BUDGET: at most 12 tool calls for this 1-line diff; rerun the builder's probes first, add at most 1 new probe(s)", a)
+        self.assertIn("ASSIGNMENT P1-01.R1 · reviewer · model sonnet", a)
+
+    def test_big_diff_keeps_the_full_budget(self):
+        self.build("P1-01", "big.txt", "x\n" * 400)
+        self.c("review", "P1-01")
+        a = (self.root / ".coniso" / "assignments" / "P1-01.R1.md").read_text(encoding="utf-8")
+        self.assertIn("BUDGET: at most 40 tool calls for this 400-line diff", a)
+        self.assertIn("2 new probe(s)", a)
+
+    def test_delta_re_review_goes_to_the_light_reviewer(self):
+        self.build("P1-01")
+        self.c("review", "P1-01")
+        self.report("P1-01.fix.md", "1. fix it\n")
+        rep = self.verdict_report("P1-01", "P1-01.R1", "fail", ["A1-A2 unmet — out.txt:1"], fix=".coniso/reports/P1-01.fix.md")
+        self.c("verdict", "P1-01", "--report", str(rep))
+        self.c("set", "P1-01", "building", "--note", "fix round 1")
+        self.c("set", "P1-01", "built")
+        out = self.c("review", "P1-01")
+        self.assertIn("SPAWN coniso:reviewer-lite · model sonnet", out)
+        a = (self.root / ".coniso" / "assignments" / "P1-01.R2.md").read_text(encoding="utf-8")
+        self.assertIn("SCOPE: delta", a)
+        self.assertIn("BUDGET: at most 12 tool calls", a)
+
+    def test_haiku_batch_goes_to_the_light_reviewer_with_a_combined_budget(self):
+        self.build("P1-06", "a.txt", "a\n" * 40)
+        self.build("P1-07", "b.txt", "b\n" * 40)
+        out = self.c("review", "P1-06", "P1-07")
+        self.assertEqual(out.count("SPAWN coniso:reviewer-lite · model sonnet"), 1)
+        a = (self.root / ".coniso" / "assignments" / "P1-06.R1.md").read_text(encoding="utf-8")
+        self.assertIn("BUDGET: at most 25 tool calls for this 80-line diff", a)
+
+
+class ContextSlices(Repo):
+    tickets = (ticket("P1-01"), ticket("P1-03"))
+
+    def test_dispatch_of_several_tickets_writes_a_slice_and_points_at_it_only_when_audited(self):
+        out = self.c("dispatch", "P1-01", "P1-03")
+        self.assertIn("MATCHES SCHEDULE", out)
+        self.assertNotIn("CONTEXT", out)
+        ctx = self.root / ".coniso" / "assignments" / "director-w1.ctx.md"
+        text = ctx.read_text(encoding="utf-8")
+        self.assertEqual(len(text.strip().splitlines()), 3)
+        self.assertIn("P1-01 · Ticket P1-01 · size S · model sonnet · effort medium · review single (sonnet correctness+spec) · state building", text)
+        self.assertIn("formation solo sonnet", text)
+        plan = self.root / ".coniso" / "assignments" / "director-w1.md"
+        plan.write_text(plan.read_text(encoding="utf-8").replace("| engineer/builder | sonnet |", "| engineer/builder | opus |", 1),
+                        encoding="utf-8")
+        out = self.c("validate-plan", str(plan))
+        self.assertNotIn("MATCHES SCHEDULE", out)
+        self.assertIn("CONTEXT " + ctx.resolve().as_posix(), out)
+        self.assertIn("never sprint.json", out)
+
+    def test_panel_review_table_gets_a_slice(self):
+        self.build("P1-01")
+        out = self.c("review", "P1-01", "--panel", "P1-01")
+        self.assertIn("CONTEXT", out)
+        ctx = self.root / ".coniso" / "assignments" / "P1-01-review.ctx.md"
+        # the slice shows the scheduled plan; the table's panel is the deviation the auditor judges against it
+        self.assertIn("review single (sonnet correctness+spec) · state reviewing", ctx.read_text(encoding="utf-8"))
+
+
+class TestCache(Repo):
+    def test_unchanged_tree_reuses_the_passing_run(self):
+        self.c("dispatch", "P1-01")
+        (self.wt("P1-01") / "a.txt").write_text("a\n", encoding="utf-8")
+        self.assertIn("TEST P1-01: PASS (exit 0)", self.c("test", "P1-01"))
+        out = self.c("test", "P1-01")
+        self.assertIn("TEST P1-01: PASS (cached: tree", out)
+        self.assertIn("P1-01.test.log", out)
+        tc = self.sprint()["tickets"]["P1-01"]["test_cache"]
+        self.assertEqual(tc["code"], 0)
+        (self.wt("P1-01") / "a.txt").write_text("b\n", encoding="utf-8")
+        self.assertIn("PASS (exit 0)", self.c("test", "P1-01"))
+        self.assertIn("PASS (exit 0)", self.c("test", "P1-01", "--fresh"))
+        self.assertIn("PASS (exit 0)", self.c("test", "main"))
+        self.assertFalse(list((self.root / ".coniso" / "reports").glob(".tree-index-*")))
+
+    def test_land_reuses_the_reviewers_run_when_the_squash_is_identical(self):
+        self.build("P1-01")
+        self.c("review", "P1-01")
+        self.c("test", "P1-01")                                                  # the reviewer's one run
+        rep = self.verdict_report("P1-01", "P1-01.R1", "pass", ["A1 met — out.txt:1", "A2 met — log"])
+        self.c("verdict", "P1-01", "--report", str(rep))
+        out = self.c("land", "P1-01")
+        self.assertIn("MERGED P1-01", out)
+        self.assertIn("checks PASS (cached: tree", out)
+        self.assertTrue((self.root / "out.txt").exists())
+        self.build("P1-02", "two.txt")
+        self.c("review", "P1-02")
+        self.c("test", "P1-02")
+        rep = self.verdict_report("P1-02", "P1-02.R1", "pass", ["A1 met — two.txt:1"])
+        self.c("verdict", "P1-02", "--report", str(rep))
+        out = self.c("land", "P1-02", "--fresh")
+        self.assertIn("MERGED P1-02", out)
+        self.assertIn("checks PASS\n", out + "\n")
+        self.assertNotIn("cached", out)
+
+    def test_no_reviewer_run_means_the_merge_tests(self):
+        self.build("P1-01")
+        self.c("review", "P1-01")
+        rep = self.verdict_report("P1-01", "P1-01.R1", "pass", ["A1 met — out.txt:1", "A2 met — log"])
+        self.c("verdict", "P1-01", "--report", str(rep))
+        out = self.c("land", "P1-01")
+        self.assertIn("checks PASS", out)
+        self.assertNotIn("cached", out)
+
+
+class BatchLand(Repo):
+    tickets = (ticket("P1-01"), ticket("P1-02"))      # independent: the same wave
+
+    def pass_ticket(self, tid, fname):
+        self.build(tid, fname)
+        self.c("review", tid)
+        rep = self.verdict_report(tid, f"{tid}.R1", "pass", ["A1 met — ok"])
+        self.c("verdict", tid, "--report", str(rep))
+
+    def test_two_tickets_land_with_one_integration_run(self):
+        self.pass_ticket("P1-01", "a.txt")
+        self.pass_ticket("P1-02", "b.txt")
+        out = self.c("land", "P1-01", "P1-02")
+        self.assertIn("BATCH 2 tickets · integration checks PASS once on the combined result", out)
+        self.assertIn("MERGED P1-01", out)
+        self.assertIn("MERGED P1-02", out)
+        self.assertIn("WAVE 1 landed", out)
+        s = self.sprint()
+        self.assertEqual({s["tickets"][x]["state"] for x in ("P1-01", "P1-02")}, {"merged"})
+        self.assertIsNone(s["tickets"]["P1-01"]["wt"])
+        self.assertTrue((self.root / "a.txt").exists() and (self.root / "b.txt").exists())
+        log = self.git("log", "--format=%s")
+        self.assertIn("P1-01: Ticket P1-01", log)
+        self.assertIn("P1-02: Ticket P1-02", log)
+        self.assertEqual(self.git("status", "--porcelain").strip(), "")
+        self.assertEqual(self.git("worktree", "list").strip().count("\n"), 0)
+
+    def test_each_flag_merges_one_at_a_time(self):
+        self.pass_ticket("P1-01", "a.txt")
+        self.pass_ticket("P1-02", "b.txt")
+        out = self.c("land", "P1-01", "P1-02", "--each")
+        self.assertNotIn("BATCH", out)
+        self.assertEqual(out.count("MERGED"), 2)
+
+    def test_failing_batch_falls_back_to_one_at_a_time(self):
+        (self.root / "check.py").write_text("import os, sys\nsys.exit(1 if os.path.exists('a.txt') and os.path.exists('b.txt') else 0)\n",
+                                           encoding="utf-8")
+        self.git("add", "-A")
+        self.git("commit", "-qm", "integration check")
+        self.sh(PY, str(SCRIPT), "init", "--test", f'"{PY}" check.py')
+        self.pass_ticket("P1-01", "a.txt")
+        self.pass_ticket("P1-02", "b.txt")
+        out = self.c("land", "P1-01", "P1-02", code=4)
+        self.assertIn("BATCH RESET: integration checks failed on the combined result", out)
+        self.assertIn("Merging one by one", out)
+        self.assertIn("MERGED P1-01", out)
+        self.assertIn("INTEGRATION FAIL P1-02", out)
+        s = self.sprint()
+        self.assertEqual(s["tickets"]["P1-01"]["state"], "merged")
+        self.assertEqual(s["tickets"]["P1-02"]["state"], "failed")
+        self.assertTrue((self.root / "a.txt").exists())
+        self.assertFalse((self.root / "b.txt").exists())
+        self.assertEqual(self.git("status", "--porcelain").strip(), "")
+        self.assertIsNotNone(s["tickets"]["P1-02"]["wt"])          # its worktree is kept for the fix round
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -38,7 +38,7 @@ meta: { id, title, product, owner, licensee, filename, revision, created, update
 models[]: { key: opus|sonnet|haiku, name, short, when }
 efforts[]: { key: low|medium|high|xhigh, when }
 phases[]: { id, name, short, weeks, why, gate, parallel?, outline?[] }   // outline = not yet expanded
-tickets[]: { id, phase, title, size: S|M|L, deps[], why, what[], accept[], prompt,
+tickets[]: { id, phase, title, size: XS|S|M|L, deps[], why, what[], accept[], prompt,
              model, effort (null for haiku), review: bool, modelWhy,
              status: todo|progress|review|done|blocked, notes, checks[bool per accept], updated }
 decisions[], open[], later[]      // strings, or {date, text, why}

@@ -57,13 +57,14 @@ Builders never judge their own work. Finished tickets go to reviewers, which the
   - For merged work: give it a git range in the assignment. Its findings come back as proposed tickets. Add them per `roadmap.md` (Operations → Findings): one ticket per finding, test-first prompt.
 - **Lead** ("lead on P2-04", or a described feature):
   1. Create the ticket: `CONISO schedule --tickets P2-04`, or `CONISO adhoc <ID> --title "…" --size M --model sonnet --accept "…" --prompt-file <file>`.
+     - **Small fix?** `--size XS` makes it a patch: one engineer told to make the smallest change, then one light reviewer (`coniso:reviewer-lite`) with a budget sized to the diff. The script promotes it to the normal review if the diff grows past 80 lines or 4 files. This is the path for a bug found after a merge or a one-file change the user asks for.
   2. Run `CONISO dispatch <id> [--specialty <name>]` (chained to step 1 with `&&`) and spawn the `SPAWN` line it prints.
      - **team** (non-haiku tickets of size L, or with effort xhigh): a `coniso:lead` whose assignment says no Review Lead serves, so it dispatches its own reviewer.
      - **solo** (other S and M tickets, and every haiku ticket): a `coniso:engineer` in a fresh worktree. It records `built` itself. Then review it per director.md §5b: `CONISO review <id> --tokens <n>`, spawn the reviewer line, and act on the `RULED` / `NEEDS RULING` line its return carries.
   3. On a pass, run `CONISO land <id>`: it merges per director.md §6 and runs `roadmap-sync`.
 - **Engineer** ("engineer, rename X"):
   - For a quick task that doesn't deserve a ticket: write `.coniso/assignments/<id>.md` with WORKDIR set to the main checkout and spawn `coniso:engineer`. Check its result yourself. No worktree, no merge.
-  - Any roadmap ticket goes through the Lead call instead, so it gets a worktree and a reviewer. S and M tickets automatically become one solo engineer plus one reviewer.
+  - Any roadmap ticket goes through the Lead call instead, so it gets a worktree and a reviewer. S and M tickets automatically become one solo engineer plus one reviewer; XS tickets a patch engineer plus a light reviewer. A fix that should merge is an XS Lead call, never an Engineer call.
 
 ## Spawn mechanics (all roles)
 
@@ -80,6 +81,8 @@ Builders never judge their own work. Finished tickets go to reviewers, which the
 
 - **Files carry the detail.** Brief, assignments, ticket packets, reports, diffs and test logs live in `.coniso/`. Agents pass paths, never contents.
 - **Every agent returns at most 12 lines** (format in formats.md). Leaders open a report file only when FLAGS asks for a decision.
+- **Auditors get a slice, not the sprint.** Every validated table comes with `<table>.ctx.md`, one line per ticket it covers. That file is the delegation auditor's context; `sprint.json` never is.
+- **Tests run once per tree.** `CONISO test` reuses a passing run on an unchanged worktree, `land` reuses it when the squash is byte-identical, and several passed tickets land with one integration run. Pass `--fresh` to force a rerun.
 - **The script does the bookkeeping.** Scheduling, state, worktrees, assignment files, diffs, tests, merges, plan validation, the mechanical verdict rules and roadmap edits are deterministic commands (`dispatch`, `review`, `verdict` and `land` bundle the common sequences), so no agent reasons through them. Chain consecutive bookkeeping commands with `&&` in one Bash call.
 - **Minimal reading.** Agents read the brief once, their own assignment, and only their own specialty file. Continued agents get "Brief updated: <line>", not a re-read.
 - **Cheapest model that does the job well.** The playbook is in `.coniso/ref/playbook.md`. When cost has to drop, cut breadth before cutting review.

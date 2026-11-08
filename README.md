@@ -39,7 +39,7 @@ The main session is always the top of the hierarchy. You call a role, and it bri
 
 Support roles, spawned by leaders, never by you:
 
-- **Reviewer** (`coniso:reviewer`): adversarial review against the acceptance criteria. Every finding needs evidence. It also hunts for gamed tests: deleted or loosened tests, hard-coded expected values, TODOs claimed as done. **Builders never judge their own work.**
+- **Reviewer** (`coniso:reviewer`, and `coniso:reviewer-lite` for small diffs: patch tickets, delta re-reviews, haiku batches): adversarial review against the acceptance criteria, within a tool-call budget the script sizes from the diff. Every finding needs evidence. It also hunts for gamed tests: deleted or loosened tests, hard-coded expected values, TODOs claimed as done. **Builders never judge their own work.**
 - **Auditor** (`coniso:auditor`): a model one tier cheaper than the leader it audits. It challenges judgment calls (model tier, packet size, ordering, scope) and review rulings. Every overrule is logged, so the retro shows whose routing is going wrong.
 - **Scout** (`coniso:scout`): read-only recon of a codebase area or docs question, written to a short map file.
 
@@ -160,6 +160,9 @@ Being straight about this:
   - **Quiet run.** The Director writes nothing between tool calls. An optional output style makes that session-wide (below).
   - **Measured, not guessed.** Each agent's reported token use is recorded per ticket (`--tokens`), and `retro` totals it per ticket and per role.
   - **Coordinators rotate.** A fresh Review Lead every 3 review rounds, a fresh manager every 3 waves, and a restart point for the Director every 3 merged waves keep long-lived contexts short. All state is on disk.
+- **Small fixes get a small path.** An XS ticket (`adhoc --size XS`) is a patch: one engineer told to make the smallest change, then one light reviewer (`coniso:reviewer-lite`, sonnet at medium effort) with a budget sized to the diff. Every reviewer's budget is sized that way (12 tool calls under 60 changed lines, up to the full 40 or 60 above 300), so small tickets stop paying for a ceiling they never used. An XS diff that grows past 80 lines or 4 files is promoted to the normal review by the script, never downgraded.
+- **Your test suite runs once per tree, not three times per ticket.** `test` reuses a passing run while the worktree is unchanged, `land` reuses it when the squash is byte-identical to the tree it passed on, and several passed tickets land as one batch with one integration run (a failure falls back to one at a time). `--fresh` forces a rerun.
+- **Auditors read a slice, not the sprint.** Every validated plan comes with a `.ctx.md` of one line per ticket; that, not the ever-growing `sprint.json`, is the auditor's context.
 - **Idle cost is small:** about 600 tokens per session while installed, whether or not you use it. The compaction hook prints nothing outside an active sprint.
 - **Rule of thumb:** use Coniso on a usage-based plan with headroom or an API budget you've set limits on. Watch your first sprint's usage before running unattended (`permissions --accept-edits`).
 
@@ -189,18 +192,18 @@ Being straight about this:
 | `init [--stack <pack>\|none]`, `preflight` | Install or refresh; check git state, roadmap validity, nesting mode and permissions |
 | `permissions [--write [--accept-edits] \| --decline \| --remove]` | Show, grant, decline or undo Coniso's entries in `.claude/settings.local.json` |
 | `schedule [--phase P] [--tickets ids] [--limit N] [--add] [--formation managed\|direct]` | Plan a sprint |
-| `validate-plan <table> [--slots N] [--no-files]` | Check a delegation plan: one owner per file per step, complete assignment files, slot limits; `MATCHES SCHEDULE` when it is exactly the scheduled plan (no audit needed) |
+| `validate-plan <table> [--slots N] [--no-files]` | Check a delegation plan: one owner per file per step, complete assignment files, slot limits; `MATCHES SCHEDULE` when it is exactly the scheduled plan (no audit needed); writes `<table>.ctx.md`, the auditor's one-line-per-ticket context |
 | `validate-handoff <id>` | Check a lead's hand-off: evidence per acceptance item, a passing test log, no unlisted `[VERIFY]`/TODO |
-| `adhoc <id> --title … [--size] [--model] [--accept …] [--prompt-file]` | Add a non-roadmap ticket |
+| `adhoc <id> --title … [--size XS\|S\|M\|L] [--model] [--accept …] [--prompt-file]` | Add a non-roadmap ticket; `XS` is a patch (smallest change, light reviewer) |
 | `status [id] [--json] [--open] [--field name]`, `set <id> [<state>] [--note] [--verdict] [--model] [--tokens N --role R]` | Sprint state; `--tokens` records an agent's reported token use for `retro` |
 | `wt add\|path\|remove <id>` | Worktrees on branch `coniso/<id>`, based on your current HEAD |
-| `diff <id>` / `diff --range A..B`, `test <id\|main>` | Diff and test output go to files; the console gets a summary |
+| `diff <id>` / `diff --range A..B`, `test <id\|main> [--fresh]` | Diff and test output go to files; the console gets a summary. `test` reuses a passing run while the worktree's tree is unchanged |
 | `sync <id> [--continue]` | Bring main into a ticket's worktree to resolve conflicts |
 | `merge <id>` | Squash, integration test, commit; resets cleanly on conflict or failure |
 | `dispatch <ids> [--specialty …] [--review lead\|self] [--from U] [--plan name] [--rewrite]` | Worktree, complete assignment file and spawn line per ticket; a validated wave table when several |
-| `review <ids> [--panel [ids]] [--delta] [--model opus] [--plan name] [--tokens N]` | Sync with main, reviewer assignments per review plan (batches and delta re-reviews included), set reviewing, spawn lines |
+| `review <ids> [--panel [ids]] [--delta] [--model opus] [--plan name] [--tokens N]` | Sync with main, measure the diff, reviewer assignments per review plan with a BUDGET sized to it (patch, batch and delta reviews go to `reviewer-lite`; an oversized patch is promoted), set reviewing, spawn lines |
 | `verdict <id[,id]> --report <file>` | Record a reviewer verdict; prints `RULED pass\|fail` when the rules settle it, `NEEDS RULING: <reason>` when a leader must |
-| `land <ids> [--tokens N]` | Merge passed tickets in dependency order; roadmap-sync once their wave is clear; flags a restart point every 3 waves |
+| `land <ids> [--tokens N] [--each] [--fresh]` | Merge passed tickets in dependency order, several as one batch with one integration run (falls back to one at a time on failure); roadmap-sync once their wave is clear; flags a restart point every 3 waves |
 | `ledger add\|stats` | Auditor objection log |
 | `brief-trim [--before YYYY-MM-DD]` | Move Decisions log rows older than the current sprint out of the brief, into `.coniso/maps/decisions.md` |
 | `roadmap-sync`, `retro [--lessons]`, `close` | Write back, report (tokens per ticket and role, oversized feedback files; `--lessons` prints only the last Lessons), archive |

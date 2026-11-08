@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+A usage pass on small work and on test runs. Review stays on every ticket that merges; what shrinks is the ceiling a reviewer is given for a small diff, the number of times a suite runs per ticket, and the context an auditor reads.
+
+### Added
+- **Patch tickets.** `adhoc --size XS` (and `XS` in a roadmap) makes a patch: one engineer told to make the smallest change that meets the acceptance items, then one light reviewer. `CONISO review` measures the diff and promotes an XS ticket over 80 changed lines or 4 files to its normal review (`PATCH UPGRADED`), by rule, so there is nothing to audit. An escalated patch loses the light review.
+- **`coniso:reviewer-lite`**, a sonnet reviewer at medium effort for small diffs: patch tickets, delta re-reviews after a fix round, and haiku batches. Same evidence standard and verdict format; it returns `FLAGS: full review recommended` instead of stretching past its budget.
+- **Reviewer budgets sized from the diff.** Every reviewer assignment carries a `BUDGET` line: 12 tool calls under 60 changed lines, 25 under 300, otherwise the old 40 (60 at opus). Reviewer prompts point at that line instead of a fixed number.
+- **One test run per tree.** `test` records the worktree's tree id with a passing run and reuses it while the tree is unchanged (`PASS (cached …)`); `merge`/`land` reuse it when the squash is byte-identical to that tree (`checks PASS (cached …)`). `--fresh` forces a rerun on `test`, `merge` and `land`.
+- **Batch land.** `land` with several tickets squashes and commits each, then runs the integration checks once on the combined result. On any failure it resets the branch and merges them one at a time, each tested, so the culprit still surfaces as `INTEGRATION FAIL`. `--each` forces one-at-a-time.
+- **Auditor context slices.** Every validated table comes with `<table>.ctx.md`, one line per ticket it covers. `dispatch`, `review` and `validate-plan` write it and print a `CONTEXT` pointer when a plan deviates. Agents are told to hand auditors this file, never `sprint.json`.
+
+### Changed
+- `MERGED` lines say how the integration checks were satisfied (`checks PASS`, `checks PASS (cached …)`, `checks: batch`).
+- Haiku batch reviews and delta re-reviews are dispatched to `coniso:reviewer-lite`.
+
 ## [1.1.0] - 2026-10-31
 
 A context-and-usage pass: fewer Director tool calls, fewer auditor round-trips that judge nothing, and less text in every long-lived context. Isolation is unchanged: one packet per agent, files carry the detail, 12-line returns.

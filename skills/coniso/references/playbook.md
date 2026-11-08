@@ -30,10 +30,13 @@ A roadmap ticket's effort shows up two ways instead:
 ## Formation (schedule decides; leaders may refine)
 | Ticket | Formation |
 |---|---|
+| size XS (not xhigh) | patch: one engineer at the ticket's model, told to make the smallest change that meets the acceptance items; one light reviewer |
 | haiku model | solo engineer at haiku; reviewed in a batch with other haiku tickets |
 | size S or M (not xhigh) | solo engineer at the ticket's model; single reviewer |
 | size L | team: lead at the ticket's model + 3 engineers (4 for opus) |
 | xhigh at size S or M | team: lead at the ticket's model + 1 engineer (S) or 2 (M); reviewer panel |
+
+XS is for a fix that stands alone: a bug found after a merge, a one-file change the user asks for. The engineer's assignment says so, and `CONISO review` measures the diff: over 80 lines or 4 files, the ticket gets its normal review (`PATCH UPGRADED`). The limit is a rule in the script, so the upgrade is never a judgment call to audit.
 
 Why S and M go solo: one capable engineer holds a whole S or M ticket in a single context. Splitting it across parallel engineers creates file seams that a lead then has to stitch. Teams are kept for L tickets, where the work really divides, and for xhigh tickets, where the extra structure is the point.
 
@@ -47,11 +50,14 @@ Sprints with more than 10 tickets, or more than 6 across several phases, get the
 | `review: true` or effort xhigh | panel: reviewer opus (lens correctness) + reviewer sonnet (lens spec+regression) |
 | opus | single opus reviewer |
 | other sonnet | single sonnet reviewer |
-| haiku | batch sonnet reviewer |
-| re-review after a fix round | one reviewer, `SCOPE: delta` (fix list + files the fix touched); sonnet, unless the ticket is opus and the failing major was a design or correctness one |
+| size XS (patch) | one light reviewer (`coniso:reviewer-lite`, sonnet; opus on an opus ticket), lens spec+regression |
+| haiku | batch light reviewer (sonnet) |
+| re-review after a fix round | one light reviewer, `SCOPE: delta` (fix list + files the fix touched); sonnet, unless the ticket is opus and the failing major was a design or correctness one |
 | minor fixes before merge | tests, docs or comments only: none (the merge test is the evidence); production code: one sonnet delta check |
 
 The Review Lead may upgrade a review (big diff, load-bearing files) but never downgrade one.
+
+**Reviewer budget.** `CONISO review` measures each diff and writes a BUDGET line into the reviewer's assignment: 12 tool calls and 1 new probe under 60 changed lines, 25 and 2 under 300, otherwise 40 (60 at opus) and 2; delta and patch reviews get 12 or 18. Big diffs keep the full ceiling; small ones stop paying for it. The light reviewer (`coniso:reviewer-lite`, sonnet at medium effort) takes the small diffs: patch tickets, delta re-reviews and haiku batches. It holds the same evidence standard, and when a diff is too big for its budget it returns `FLAGS: full review recommended` instead of stretching; the leader then re-dispatches a full reviewer.
 
 **Ruling:**
 - Any blocker fails the ticket.
@@ -95,6 +101,7 @@ Every escalation is recorded with `CONISO set --model`.
   - Reviewers rerun the builder's probes first, add at most 2 new adversarial probes and 1 mutation per critical path, and run `CONISO test` once, after their last restore.
   - A reviewer who finds one instance of a class of defect (a rejected name, a missed edge) sweeps the whole class from the source in the same review, so one fix round covers it.
   - `director continue light` halves concurrent builds and keeps single reviewers for maintenance sessions.
+- **One test run per tree.** `CONISO test` records the worktree's tree id with a passing run and reuses it while the tree is unchanged (`PASS (cached …)`), so the reviewer's run after the builder's costs nothing. `land` reuses it again when the squash is byte-identical to that tree, and several passed tickets land as one batch with one integration run (a failure falls back to one ticket at a time). The happy path runs a ticket's suite once instead of three times; `--fresh` forces a rerun anywhere.
 
 ## Context discipline
 - Paths, not contents.

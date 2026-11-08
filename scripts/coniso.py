@@ -24,7 +24,8 @@ STATES = ["queued", "building", "built", "reviewing", "passed", "failed",
           "conflict", "merged", "blocked", "dropped"]
 ACTIVE = {"building", "built", "reviewing", "passed", "failed", "conflict"}
 TERMINAL = {"merged", "blocked", "dropped"}
-SIZE_HOURS = {"S": 1.5, "M": 3.5, "L": 7.5}
+SIZE_HOURS = {"XS": 0.5, "S": 1.5, "M": 3.5, "L": 7.5}
+PATCH_MAX_LINES, PATCH_MAX_FILES = 80, 4     # an XS ticket whose diff exceeds either gets the normal review
 RM_RE = re.compile(r'(<script type="application/json" id="roadmap-data">)(.*?)(</script>)', re.S)
 SCRIPT = Path(__file__).resolve()
 
@@ -36,19 +37,19 @@ def die(msg, code=1):
     sys.exit(code)
 
 
-def run(cmd, cwd=None, shell=False, timeout=None):
+def run(cmd, cwd=None, shell=False, timeout=None, env=None):
     try:
         return subprocess.run(cmd, cwd=str(cwd) if cwd else None, shell=shell,
                               capture_output=True, text=True, encoding="utf-8",
-                              errors="replace", timeout=timeout)
+                              errors="replace", timeout=timeout, env=env)
     except FileNotFoundError as e:
         die(f"command not found: {e}")
     except subprocess.TimeoutExpired:
         return subprocess.CompletedProcess(cmd, 124, "", f"TIMEOUT after {timeout}s")
 
 
-def git(args, cwd, check=True):
-    r = run(["git"] + args, cwd=cwd)
+def git(args, cwd, check=True, env=None):
+    r = run(["git"] + args, cwd=cwd, env=env)
     if check and r.returncode != 0:
         die(f"git {' '.join(args)} failed: {(r.stderr or r.stdout).strip()[:400]}")
     return r
@@ -221,7 +222,7 @@ def validate_roadmap(data):
             errs.append(f"{tid}: checks/accept length mismatch")
         if t.get("status") not in ("todo", "progress", "review", "done", "blocked"):
             errs.append(f"{tid}: bad status {t.get('status')}")
-        if t.get("size") not in ("S", "M", "L"):
+        if t.get("size") not in ("XS", "S", "M", "L"):
             errs.append(f"{tid}: bad size {t.get('size')}")
         if models and t.get("model") not in models:
             errs.append(f"{tid}: model {t.get('model')} not in models[]")
@@ -249,6 +250,10 @@ def formation(t):
     model = t.get("model") or "sonnet"
     size = t.get("size") or "M"
     eff = t.get("effort")
+    if size == "XS" and eff != "xhigh":
+        # A patch: one engineer making the smallest change that meets the acceptance items, then a light reviewer
+        # whose budget is sized from the diff. `review` promotes it to the normal review when the diff grows past the limit.
+        return {"kind": "solo", "model": model, "engineers": 1, "patch": True}
     if model == "haiku":
         return {"kind": "solo", "model": "haiku", "engineers": 1}
     if size in ("S", "M") and eff != "xhigh":
@@ -258,7 +263,7 @@ def formation(t):
 
 
 def team_formation(size, model):
-    n = {"S": 1, "M": 2, "L": 3}.get(size, 2) + (1 if size == "L" and model == "opus" else 0)
+    n = {"XS": 1, "S": 1, "M": 2, "L": 3}.get(size, 2) + (1 if size == "L" and model == "opus" else 0)
     return {"kind": "team", "lead": model, "engineers": n, "engineer_model": "sonnet"}
 
 
@@ -278,8 +283,11 @@ def review_plan(t):
     if t.get("review") or t.get("effort") == "xhigh":
         plan = {"kind": "panel", "reviewers": [{"model": "opus", "lens": "correctness"},
                                              {"model": "sonnet", "lens": "spec+regression"}]}
+    elif t.get("size") == "XS":
+        plan = {"kind": "patch", "reviewers": [{"model": "opus" if t.get("model") == "opus" else "sonnet",
+                                             "lens": "spec+regression", "agent": "reviewer-lite"}]}
     elif (t.get("model") or "sonnet") == "haiku":
-        plan = {"kind": "batch", "reviewers": [{"model": "sonnet", "lens": "spec"}]}
+        plan = {"kind": "batch", "reviewers": [{"model": "sonnet", "lens": "spec", "agent": "reviewer-lite"}]}
     elif t.get("model") == "opus":
         plan = {"kind": "single", "reviewers": [{"model": "opus", "lens": "correctness+spec"}]}
     else:
@@ -419,7 +427,7 @@ def sprint_ticket(rt, internal_deps, ext_deps, adhoc=False):
 def describe(t):
     f = t["formation"]
     if f["kind"] == "solo":
-        form = f"solo({f['model']})"
+        form = f"{'patch' if f.get('patch') else 'solo'}({f['model']})"
     else:
         form = f"team({f['lead']}, {f['engineers']} eng)"
     return form
@@ -443,7 +451,8 @@ def print_plan(c, budget, conf):
         print(f"  W{w} ({used}/{budget}): " + " · ".join(cells))
     panels = [tid for tid, t in c["tickets"].items() if t["review_plan"]["kind"] == "panel" and t["state"] not in TERMINAL]
     batch = [tid for tid, t in c["tickets"].items() if t["review_plan"]["kind"] == "batch" and t["state"] not in TERMINAL]
-    print(f"Review: panel {','.join(panels) or '-'} · batch {','.join(batch) or '-'} · others single reviewer")
+    patch = [tid for tid, t in c["tickets"].items() if t["review_plan"]["kind"] == "patch" and t["state"] not in TERMINAL]
+    print(f"Review: panel {','.join(panels) or '-'} · batch {','.join(batch) or '-'} · patch {','.join(patch) or '-'} · others single reviewer")
     if c.get("formation") == "managed" or rec == "managed":
         for s in c.get("tracks", tracks_for(c)):
             print(f"  Track {s['id']} ({'+'.join(map(str, s['phases']))}): {', '.join(s['tickets'])}")
@@ -1122,6 +1131,8 @@ def cmd_set(a):
             else:                       # playbook: on escalation a solo ticket becomes a team
                 t["formation"] = team_formation(t.get("size") or "M", a.model)
                 note(t, t["state"], f"escalated {prev} -> {a.model}; solo -> team({t['formation']['engineers']} eng)")
+            if t["review_plan"]["kind"] == "patch":     # an escalated patch is no longer small work
+                t["review_plan"] = review_plan(dict(t, size="S"))
         t["state"] = a.state
         note(t, a.state, a.note or "", a.tokens, a.role)
         save_sprint(c)
@@ -1267,8 +1278,35 @@ def run_checks(target, conf, log):
     return code, "\n".join(text)
 
 
+def tree_id(path, conf):
+    """Git tree id of a checkout's current content: tracked and untracked files that .gitignore allows, minus linked
+    dirs and copied files, computed in a scratch index so the real one is untouched. Two checkouts with the same tree
+    id hold byte-identical files, so a passing test run on one is evidence for the other."""
+    scratch = L / "reports" / f".tree-index-{os.getpid()}"
+    env = dict(os.environ, GIT_INDEX_FILE=str(scratch))
+    try:
+        if git(["read-tree", "HEAD"], path, check=False, env=env).returncode != 0:
+            return None
+        git(["add", "-A", "--", "."] + pathspec_excludes(conf)[2:], path, check=False, env=env)
+        return git(["write-tree"], path, check=False, env=env).stdout.strip() or None
+    finally:
+        try:
+            scratch.unlink()
+        except OSError:
+            pass
+
+
+def cached_pass(t, tree):
+    """The ticket's recorded passing `test` run for exactly this tree, or None."""
+    tc = (t or {}).get("test_cache") or {}
+    if tree and tc.get("tree") == tree and tc.get("code") == 0 and Path(tc.get("log") or "").exists():
+        return tc
+    return None
+
+
 def cmd_test(a):
     conf = cfg()
+    t = None
     if a.id == "main":
         target = ROOT
     else:
@@ -1276,10 +1314,21 @@ def cmd_test(a):
         t = ticket(c, a.id)
         target = Path(t["wt"]) if t.get("wt") else ROOT
     log = L / "reports" / f"{safe(a.id)}.test.log"
+    tree = tree_id(target, conf) if (t is not None and t.get("wt") and conf.get("test_cache", True) and not a.fresh) else None
+    hit = cached_pass(t, tree)
+    if hit:
+        print(f"TEST {a.id}: PASS (cached: tree {tree[:7]} unchanged since its last run at {hit['ts']}; "
+              f"`test {a.id} --fresh` reruns) · log {hit['log']}")
+        return
     code, text = run_checks(target, conf, log)
     if code is None:
         print(f"TEST {a.id}: SKIPPED — {text}")
         sys.exit(2)
+    if tree and code == 0:
+        with Lock():
+            c = load_sprint()
+            ticket(c, a.id)["test_cache"] = {"tree": tree, "code": 0, "ts": now_z(), "log": p(log)}
+            save_sprint(c)
     tail = text.strip().splitlines()[-(5 if code == 0 else 25):]
     print(f"TEST {a.id}: {'PASS' if code == 0 else 'FAIL'} (exit {code}) · log {p(log)}")
     print("\n".join(tail))
@@ -1381,15 +1430,22 @@ def cmd_merge(a):
         git(["reset", "--hard", "-q", "HEAD"], ROOT, check=False)
         mark("failed", "squash produced no net changes")
         die(f"{a.id}: no net changes after squash", code=4)
+    checks = "skipped (--no-test)"
     if not a.no_test:
         log = L / "reports" / f"{safe(a.id)}.merge-test.log"
-        code, text = run_checks(ROOT, conf, log)
-        if code not in (None, 0):
-            git(["reset", "--hard", "-q", "HEAD"], ROOT, check=False)
-            mark("failed", f"integration checks failed on {c.get('branch')} after squash; log {p(log)}")
-            print(f"INTEGRATION FAIL {a.id} (exit {code}) · log {p(log)} · main reset, nothing committed")
-            print("\n".join(text.strip().splitlines()[-20:]))
-            sys.exit(4)
+        tree = git(["write-tree"], ROOT, check=False).stdout.strip() if conf.get("test_cache", True) and not getattr(a, "fresh", False) else ""
+        hit = cached_pass(t, tree)
+        if hit:     # the squash produced exactly the tree the ticket's last passing `test` ran on
+            checks = f"PASS (cached: tree {tree[:7]} already tested at {hit['ts']}, log {hit['log']})"
+        else:
+            code, text = run_checks(ROOT, conf, log)
+            if code not in (None, 0):
+                git(["reset", "--hard", "-q", "HEAD"], ROOT, check=False)
+                mark("failed", f"integration checks failed on {c.get('branch')} after squash; log {p(log)}")
+                print(f"INTEGRATION FAIL {a.id} (exit {code}) · log {p(log)} · main reset, nothing committed")
+                print("\n".join(text.strip().splitlines()[-20:]))
+                sys.exit(4)
+            checks = "PASS" if code == 0 else "none configured"
     msg = f"{a.id}: {t['title']}" if not t.get("adhoc") else f"{t['title']} ({a.id})"
     r = git(["commit", "-q", "-m", msg, "-m", f"Coniso sprint {c['name']}"], ROOT, check=False)
     if r.returncode != 0:
@@ -1398,10 +1454,10 @@ def cmd_merge(a):
         die(f"commit refused (hook?): {(r.stderr or r.stdout).strip()[:300]}", code=5)
     sha = git(["rev-parse", "HEAD"], ROOT).stdout.strip()
     stat = git(["show", "--stat", "--format=", "HEAD"], ROOT).stdout.strip().splitlines()
-    mark("merged", f"merged as {sha[:7]}", sha)
+    mark("merged", f"merged as {sha[:7]}; checks {checks}", sha)
     if not a.keep:
         cmd_wt(argparse.Namespace(action="remove", id=a.id, force=True))
-    print(f"MERGED {a.id} as {sha[:7]} on {c.get('branch')} · {stat[-1].strip() if stat else ''}")
+    print(f"MERGED {a.id} as {sha[:7]} on {c.get('branch')} · {stat[-1].strip() if stat else ''} · checks {checks}")
     ready = next_ready(load_sprint())
     if ready:
         print(f"Now ready: {', '.join(ready)}")
@@ -1612,6 +1668,9 @@ def cmd_validate_plan(a):
     if not findings:
         match = not a.no_files and schedule_match(path)
         print(f"PLAN OK {path.name}: {summary} · D3 D5 D6 pass" + (" · MATCHES SCHEDULE (skip the delegation audit)" if match else ""))
+        ctx = write_plan_ctx(path)
+        if ctx and not match:
+            print(f"CONTEXT {p(ctx)} — the auditor's context (one line per ticket), never sprint.json")
         return
     print(f"PLAN FAIL {path.name}: {summary} · {len(findings)} finding(s)")
     for rule, unit, text in findings[:20]:
@@ -1972,6 +2031,51 @@ def write_table(name, rows, review, used, allowed):
     return f
 
 
+def write_ctx(name, ids, c):
+    """`<plan>.ctx.md`: one line per ticket a plan covers. It is the auditor's context in place of sprint.json,
+    which grows with every note and token record of the sprint."""
+    lines = [f"CONTEXT {name} · sprint {c['name']} · {len(ids)} ticket(s), one line each · {GEN_MARK}"]
+    for tid in ids:
+        t = c["tickets"].get(tid)
+        if not t:
+            continue
+        f_ = t["formation"]
+        form = (("patch " if f_.get("patch") else "solo ") + f_["model"]) if f_["kind"] == "solo" \
+            else f"team: lead {f_['lead']} + {f_['engineers']} eng"
+        rv = " + ".join(f"{r['model']} {r['lens']}" for r in t["review_plan"]["reviewers"])
+        lines.append(f"{tid} · {t['title']} · size {t.get('size')} · model {t.get('model')} · effort {t.get('effort') or '-'}"
+                     f" · review {t['review_plan']['kind']} ({rv}) · state {t['state']} · attempts {t['attempts']}"
+                     f" · deps {','.join(t['deps']) or '-'} · formation {form}")
+    f = L / "assignments" / f"{name}.ctx.md"
+    f.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return f
+
+
+def plan_tickets(rows, c):
+    """Ticket ids a delegation table refers to: unit prefixes, `ticket X` scopes, and the tickets of named tracks."""
+    out = []
+    tracks = {tr["id"]: tr for tr in c.get("tracks") or []}
+    for r in rows:
+        unit = r["unit"].strip("` ")
+        cand = [unit.partition(".")[0]] + re.findall(r"ticket\s+(\S+)", r.get("owns", "") + " " + r.get("needs", ""))
+        if unit in tracks:
+            cand += tracks[unit].get("tickets", [])
+        for x in cand:
+            if x in c["tickets"] and x not in out:
+                out.append(x)
+    return out
+
+
+def write_plan_ctx(plan_path):
+    """Write the plan's context slice from the sprint; every open ticket when the rows name none."""
+    c = load_sprint(required=False)
+    if not c:
+        return None
+    _, rows = parse_plan(plan_path.read_text(encoding="utf-8"))
+    ids = plan_tickets(rows or [], c) or [tid for tid, t in c["tickets"].items() if t["state"] not in TERMINAL]
+    return write_ctx(plan_path.stem, ids, c)
+
+
 def check_table(f):
     findings, summary = validate_plan(f)
     if findings:
@@ -1981,6 +2085,9 @@ def check_table(f):
         sys.exit(1)
     match = schedule_match(f)
     print(f"PLAN OK {f.name}: {summary}" + (" · MATCHES SCHEDULE" if match else " · deviates from the schedule: audit it"))
+    ctx = write_plan_ctx(f)
+    if ctx and not match:
+        print(f"CONTEXT {p(ctx)} — the auditor's context (one line per ticket), never sprint.json")
 
 
 def parse_specialties(arg, ids):
@@ -2016,6 +2123,9 @@ def cmd_dispatch(a):
         fix = L / "reports" / f"{safe(tid)}.fix.md"
         inputs = packet + (f" · fix list {p(fix)}" if fix.exists() else "")
         bounds = "This ticket only: nothing from other tickets or later work. Never run git or edit the roadmap or the brief."
+        if f_.get("patch"):
+            bounds += (f" Patch ticket: the smallest change that meets the acceptance items, in the files it needs; no refactors "
+                       f"or drive-by fixes. A diff over {PATCH_MAX_LINES} lines or {PATCH_MAX_FILES} files loses the light review.")
         if f_["kind"] == "solo":
             if conf.get("worktrees", True):
                 with redirect_out():
@@ -2058,6 +2168,42 @@ def cmd_dispatch(a):
     print("\n".join(spawns))
 
 
+def diff_stats(t, conf):
+    """(changed lines, changed files) of a ticket's worktree against its base, new files included; (None, None)
+    when there is no worktree to measure."""
+    if not (conf.get("worktrees", True) and t.get("wt") and t.get("base")):
+        return None, None
+    wt = Path(t["wt"])
+    git(["add", "-N", "--"] + pathspec_excludes(conf)[2:] + ["."], wt, check=False)
+    r = git(["diff", "--numstat", t["base"]] + pathspec_excludes(conf), wt, check=False)
+    lines = files = 0
+    for ln in r.stdout.splitlines():
+        parts = ln.split("\t")
+        if len(parts) >= 3:
+            files += 1
+            lines += sum(int(x) for x in parts[:2] if x.isdigit())
+    return lines, files
+
+
+def review_budget(lines, model, kind, cmd):
+    """The reviewer's BUDGET line, sized from the diff it has to read. Big diffs keep the full ceiling; small ones
+    stop paying for it."""
+    if lines is None:
+        calls = 60 if model == "opus" else 40
+    elif kind in ("delta", "patch"):
+        calls = 12 if lines <= 60 else 18
+    elif lines <= 60:
+        calls = 12
+    elif lines <= 300:
+        calls = 25
+    else:
+        calls = 60 if model == "opus" else 40
+    probes = 1 if calls <= 18 else 2
+    size = "a diff of unknown size" if lines is None else f"this {lines}-line diff"
+    return (f"at most {calls} tool calls for {size}; rerun the builder's probes first, add at most {probes} new probe(s) "
+            f"and 1 mutation per acceptance-critical path, and run `{cmd} test` once, after your last restore")
+
+
 def next_reviewer_n(tid):
     n = 1
     while (L / "assignments" / f"{tid}.R{n}.md").exists():
@@ -2098,8 +2244,24 @@ def cmd_review(a):
         first = group[0]
         t = c["tickets"][first]
         delta = a.delta or t["attempts"] > 0
-        if delta:   # playbook: re-reviews get one reviewer on the fix list and the files it touched
-            reviewers = [{"model": a.model or "sonnet", "lens": "spec+regression"}]
+        lines_, files_, measured = 0, 0, False
+        for x in group:
+            ln_, fl_ = diff_stats(c["tickets"][x], conf)
+            if ln_ is not None:
+                measured, lines_, files_ = True, lines_ + ln_, files_ + fl_
+        kind = t["review_plan"]["kind"]
+        if kind == "patch" and not delta and measured and (lines_ > PATCH_MAX_LINES or files_ > PATCH_MAX_FILES):
+            with Lock():    # the script decided this by rule, so the upgraded plan is the scheduled plan: nothing to audit
+                c = load_sprint()
+                t = c["tickets"][first]
+                t["review_plan"] = review_plan(dict(t, size="S"))
+                note(t, t["state"], f"patch upgraded: {lines_} lines / {files_} files over {PATCH_MAX_LINES}/{PATCH_MAX_FILES}")
+                save_sprint(c)
+            kind = t["review_plan"]["kind"]
+            print(f"PATCH UPGRADED {first}: {lines_} lines across {files_} files exceeds the patch limit "
+                  f"({PATCH_MAX_LINES} lines / {PATCH_MAX_FILES} files); it gets the normal {kind} review")
+        if delta:   # playbook: re-reviews get one light reviewer on the fix list and the files it touched
+            reviewers = [{"model": a.model or "sonnet", "lens": "spec+regression", "agent": "reviewer-lite"}]
         elif a.panel and (a.panel == "*" or first in a.panel.split(",")) and t["review_plan"]["kind"] != "panel":
             reviewers = review_plan(dict(t, review=True))["reviewers"]
         else:
@@ -2119,19 +2281,22 @@ def cmd_review(a):
                 prev = [x for x in sorted((L / "reports").iterdir())
                         if re.fullmatch(re.escape(safe(first)) + r"\.R\d+\.md", x.name) and x.name != rep.name]
                 inputs += f" · fix list {p(L / 'reports' / (safe(first) + '.fix.md'))}" + "".join(f" · earlier review {p(x)}" for x in prev)
-            path, _ = write_assignment(unit, f"ASSIGNMENT {unit} · reviewer · model {rv['model']} · from {a.from_}", [
+            agent = rv.get("agent", "reviewer")
+            path, _ = write_assignment(unit, f"ASSIGNMENT {unit} · {agent} · model {rv['model']} · from {a.from_}", [
                 ("READ FIRST", f"{p(L / 'BRIEF.md')} · {packets}"), ("WORKDIR", p(t.get("wt") or ROOT)),
                 ("OBJECTIVE", f"Verify {', '.join(group)} against the acceptance items and the brief through lens {rv['lens']}, and return an evidence-backed verdict."),
                 ("OWNS", f"{p(rep)}, {p(L / 'reports' / unit)}/**, {p(fix)}"), ("LENS", rv["lens"]),
-                ("SCOPE", "delta" if delta else "full"), ("INPUTS", inputs),
+                ("SCOPE", "delta" if delta else "full"),
+                ("BUDGET", review_budget(lines_ if measured else None, rv["model"], "delta" if delta else kind, cmd)),
+                ("INPUTS", inputs),
                 ("BOUNDARIES", "Never edit WORKDIR files or run git; probes only under your reports folder."),
                 ("DONE WHEN", f"a verdict per formats.md in your report, with {items} each marked met or unmet with evidence. "
                               f"Then run `{cmd} verdict {','.join(group)} --report {p(rep)}` and put the line it prints in your return."),
                 ("RETURN", f"verdict return (formats.md) + detail in {p(rep)}")], True)
-            rows.append([unit, f"reviewer/{rv['lens']}", rv["model"], "1",
+            rows.append([unit, f"{agent}/{rv['lens']}", rv["model"], "1",
                          f".coniso/reports/{unit}.md, .coniso/reports/{unit}/**, .coniso/reports/{fix.name}",
                          ", ".join(f"ticket {x}" for x in group), "verdict"])
-            spawns.append(spawn_line("coniso:reviewer", rv["model"], path))
+            spawns.append(spawn_line(f"coniso:{agent}", rv["model"], path))
         for x in group:
             plans[x] = units
     with Lock():
@@ -2282,8 +2447,55 @@ def cmd_verdict(a):
     print("\n".join(out))
 
 
+def land_batch(order, conf, branch):
+    """Squash every passed ticket onto the branch, then run the integration checks once on the combined result
+    instead of once per ticket. On any problem (a conflict, no changes, failing checks) the branch goes back to
+    where it started and the tickets back to passed, so the caller merges and tests them one at a time and finds
+    the culprit. Returns True when the batch landed."""
+    start = git(["rev-parse", "HEAD"], ROOT).stdout.strip()
+    touched, problem = [], None
+    for tid in order:
+        touched.append(tid)
+        r = redirect_out()
+        try:
+            with r:
+                cmd_merge(argparse.Namespace(id=tid, force=False, no_test=True, keep=True, fresh=True))
+        except SystemExit:
+            first = next((x for x in r.text.strip().splitlines() if x.strip()), f"{tid} did not merge")
+            problem = first.strip()
+            break
+    if problem is None:
+        log = L / "reports" / f"land-{safe(order[0])}+{len(order) - 1}.merge-test.log"
+        code, text = run_checks(ROOT, conf, log)
+        if code in (None, 0):
+            for tid in order:
+                with redirect_out():
+                    cmd_wt(argparse.Namespace(action="remove", id=tid, force=True))
+            c = load_sprint()
+            for tid in order:
+                print(f"MERGED {tid} as {(c['tickets'][tid].get('merged_sha') or '')[:7]} on {branch} · checks: batch")
+            print(f"BATCH {len(order)} tickets · integration checks {'PASS' if code == 0 else 'none configured'} "
+                  f"once on the combined result · log {p(log)}")
+            ready = next_ready(c)
+            if ready:
+                print(f"Now ready: {', '.join(ready)}")
+            return True
+        problem = f"integration checks failed on the combined result (exit {code}) · log {p(log)}"
+    git(["reset", "--hard", "-q", start], ROOT, check=False)
+    with Lock():
+        c = load_sprint()
+        for tid in touched:
+            t = c["tickets"][tid]
+            t["state"], t["merged_sha"] = "passed", None
+            note(t, "passed", "batch land reset; merging one by one")
+        save_sprint(c)
+    print(f"BATCH RESET: {problem} · {branch} back at {start[:7]}")
+    return False
+
+
 def cmd_land(a):
-    """Merge passed tickets in dependency order; run roadmap-sync once their wave has nothing in flight."""
+    """Merge passed tickets in dependency order, as one batch with one integration run when there are several;
+    run roadmap-sync once their wave has nothing in flight."""
     conf = cfg()
     c = load_sprint()
     ids = [x for x in ",".join(a.ids).split(",") if x]
@@ -2293,11 +2505,16 @@ def cmd_land(a):
             c2 = load_sprint()
             note(ticket(c2, order[0]), c2["tickets"][order[0]]["state"], "reviewer tokens", a.tokens, a.role or "reviewer")
             save_sprint(c2)
+    if len(order) > 1 and not a.each and conf.get("worktrees", True):
+        if not land_batch(order, conf, c.get("branch")):
+            print("Merging one by one to find the culprit.")
     for tid in order:
+        if load_sprint()["tickets"][tid]["state"] == "merged":
+            continue
         r = redirect_out()
         try:
             with r:
-                cmd_merge(argparse.Namespace(id=tid, force=False, no_test=False, keep=False))
+                cmd_merge(argparse.Namespace(id=tid, force=False, no_test=False, keep=False, fresh=a.fresh))
         except SystemExit as e:
             print(r.text.strip())
             sys.exit(e.code or 1)
@@ -2608,7 +2825,7 @@ def main():
     s = sp.add_parser("adhoc", help="add a non-roadmap ticket")
     s.add_argument("id")
     s.add_argument("--title", required=True)
-    s.add_argument("--size", default="M", choices=["S", "M", "L"])
+    s.add_argument("--size", default="M", choices=["XS", "S", "M", "L"], help="XS: a patch (smallest change, light review sized to the diff)")
     s.add_argument("--model", default="sonnet", choices=["haiku", "sonnet", "opus"])
     s.add_argument("--effort", default="medium", choices=["low", "medium", "high", "xhigh"])
     s.add_argument("--review", action="store_true")
@@ -2653,6 +2870,7 @@ def main():
 
     s = sp.add_parser("test")
     s.add_argument("id")
+    s.add_argument("--fresh", action="store_true", help="rerun even if this exact tree already passed")
     s.set_defaults(fn=cmd_test)
 
     s = sp.add_parser("sync")
@@ -2665,6 +2883,7 @@ def main():
     s.add_argument("--force", action="store_true")
     s.add_argument("--no-test", action="store_true")
     s.add_argument("--keep", action="store_true")
+    s.add_argument("--fresh", action="store_true", help="run the integration checks even if the squashed tree already passed `test`")
     s.set_defaults(fn=cmd_merge)
 
     s = sp.add_parser("ledger")
@@ -2713,8 +2932,10 @@ def main():
     s.add_argument("--unit", help="reviewer unit when the report has no VERDICT line")
     s.set_defaults(fn=cmd_verdict)
 
-    s = sp.add_parser("land", help="merge passed tickets; roadmap-sync when their wave has nothing in flight")
+    s = sp.add_parser("land", help="merge passed tickets (several: one batch, one integration run); roadmap-sync when their wave has nothing in flight")
     s.add_argument("ids", nargs="+")
+    s.add_argument("--each", action="store_true", help="merge and test one ticket at a time instead of one batch run")
+    s.add_argument("--fresh", action="store_true", help="never reuse a ticket's passing `test` run for the integration checks")
     s.add_argument("--tokens", type=int, help="the reviewer's reported tokens, recorded on the first ticket")
     s.add_argument("--role", help="role for --tokens (default reviewer)")
     s.set_defaults(fn=cmd_land)

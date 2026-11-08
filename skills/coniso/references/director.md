@@ -41,7 +41,7 @@ Budget posture:
 1. Write `.coniso/assignments/director-w<n>.md` with the delegation table (format in formats.md; every row has a Step): one manager per track, with that track's tickets and slot share (build budget ÷ tracks), and who reviews (the Review Lead if one serves).
 2. Write one assignment per row: `.coniso/assignments/T<k>.md` for each manager (track tickets, slot share, "Review Lead serves: yes", wave 1 ticket list, WORKDIR the repo root), with every formats.md field.
 3. Run `CONISO validate-plan .coniso/assignments/director-w<n>.md`. Fix every finding (ownership, missing fields, slots) until it prints `PLAN OK`. These are never sent to the auditor.
-4. Spawn `coniso:auditor` (model `sonnet`) with `AUDIT delegation .coniso/assignments/director-w<n>.md · context: .coniso/sprint.json`. Skip it only when you dispatch exactly one unit exactly as the schedule planned it, or validate-plan prints `MATCHES SCHEDULE`.
+4. Spawn `coniso:auditor` (model `sonnet`) with `AUDIT delegation .coniso/assignments/director-w<n>.md · context: .coniso/assignments/director-w<n>.ctx.md` (validate-plan wrote that one-line-per-ticket slice; never give an auditor `sprint.json`). Skip it only when you dispatch exactly one unit exactly as the schedule planned it, or validate-plan prints `MATCHES SCHEDULE`.
 5. Answer every objection in the plan file: `O1 accepted` (edit the table and assignments, then re-run validate-plan) or `O1 overruled: <reason>`.
 6. Record the audit: `CONISO ledger add --unit director-w<n> --leader director --kind delegation --raised N --accepted A --overruled O --reason "…"`.
 
@@ -64,7 +64,7 @@ As soon as any ticket is `built`, don't wait for the wave to finish:
 
 ### 5b. Review without a Review Lead
 Used for a single Lead call on a solo ticket, where spawning a Review Lead would cost more than the ticket.
-1. Run `CONISO review <id> --tokens <builder's tokens>`. It syncs the ticket with main, writes one reviewer assignment per `review_plan` entry (a panel also gets its validated table `<id>-review.md`), sets `reviewing`, and prints the `SPAWN` line(s). After a fix round it sends one `SCOPE: delta` reviewer by itself. A sync conflict stops it: send the builder the conflict (§6 table), then run it again.
+1. Run `CONISO review <id> --tokens <builder's tokens>`. It syncs the ticket with main, measures the diff, writes one reviewer assignment per `review_plan` entry with a BUDGET sized to that diff (a panel also gets its validated table `<id>-review.md`), sets `reviewing`, and prints the `SPAWN` line(s). After a fix round it sends one light `SCOPE: delta` reviewer by itself; XS tickets get a light reviewer unless their diff outgrew the patch limit (`PATCH UPGRADED`, normal review). A sync conflict stops it: send the builder the conflict (§6 table), then run it again.
 2. Spawn the line(s) in one message.
 3. Each reviewer runs `CONISO verdict`, which records its verdict and applies the mechanical rules (any blocker or unmet item fails; minors never fail; an item without evidence voids the verdict). Its return carries the result:
    - `RULED pass|fail`: the state is set. If the line says `verdict audit required`, spawn a sonnet auditor with `AUDIT verdict .coniso/reports/<id>.ruling.md · context: <reviewer report>`, resolve, and log `--kind verdict`. An accepted objection that changes the ruling: `CONISO set <id> passed|failed --verdict … --note …`.
@@ -77,14 +77,17 @@ Used for a single Lead call on a solo ticket, where spawning a Review Lead would
   - Fixes that touch only tests, docs or comments: the merge's integration test is the evidence. No further review and no audit.
   - Fixes that touch production code: one sonnet **delta check** (`CONISO review <id> --delta`) on the diff since the review. It isn't a full re-review, and it isn't audited unless it fails.
 - **Fix rounds** go to the same unit by SendMessage while its context is healthy, since it already holds the code. Use a fresh unit only on escalation, or when the unit has reported more than about 100k tokens.
-- **Re-reviews** after a fix round get one reviewer with `SCOPE: delta` (`CONISO review` does this by itself): the fix list plus regression in the files the fix touched, reusing the earlier review's probes and logs. Sonnet by default. Use `--model opus` only when the ticket is opus and the failing finding was a design or correctness major.
+- **Re-reviews** after a fix round get one light reviewer (`coniso:reviewer-lite`) with `SCOPE: delta` (`CONISO review` does this by itself): the fix list plus regression in the files the fix touched, reusing the earlier review's probes and logs. Sonnet by default. Use `--model opus` only when the ticket is opus and the failing finding was a design or correctness major.
+- **Small fixes that stand alone** (a bug found after a merge, a one-file change the user asks for) are XS tickets: `CONISO adhoc <id> --size XS …`, then the Lead call. The engineer is told to make the smallest change; the review is one light reviewer with a budget sized to the diff; `review` promotes it to the normal review if the diff grows past 80 lines or 4 files. Never route a fix that should merge through the Engineer call: that path has no reviewer.
 - **Your own design rulings.** Before you write a design rule into a fix list, check each of its premises against the source, because a wrong premise costs a full round. Never Read project source files yourself:
   - Check a premise with one tightly scoped Grep: a narrow path or glob, `head_limit` of a few lines, and a pattern that answers it on a single line.
   - If one Grep can't settle it, spawn a haiku `coniso:scout` whose assignment asks exactly that question and says to return the answer in one line (RESULT), with no map file.
 - **Your own files.** Edit `.coniso/` notes, checks, hand-offs and rulings directly; never spawn an agent for a few-line edit. Batch tiny doc fixes into one haiku unit.
 
 ## 6. Merge (only you merge)
-Run `CONISO land <ids> [--tokens <reviewer's tokens>]` on `passed` tickets. It merges them in dependency order (each squashed, built and tested on the integrated result, and committed as `<id>: <title>` only if that passes), and once their wave has nothing in flight it runs `roadmap-sync`.
+Run `CONISO land <ids> [--tokens <reviewer's tokens>]` on `passed` tickets. It merges them in dependency order and once their wave has nothing in flight runs `roadmap-sync`.
+- **Several tickets** land as one batch: each is squashed and committed as `<id>: <title>`, then the build and tests run once on the combined result. If that run fails, the branch is reset to where it was and the tickets merge one at a time, each tested, so the culprit surfaces as an `INTEGRATION FAIL`. `--each` forces one-at-a-time from the start.
+- **One ticket** is squashed, built and tested on the integrated result. When the squash is byte-identical to the tree the reviewer's `CONISO test` already passed on, the run is reused (`checks PASS (cached …)`); `--fresh` forces a rerun.
 
 | Result | Action |
 |---|---|

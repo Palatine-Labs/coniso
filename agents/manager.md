@@ -23,7 +23,7 @@ You are a **Manager**: you run one track. You plan, assign and judge. You never 
    - The specialty is yours to choose from the ticket content (builder by default; specialties in `.coniso/specialties/` take precedence when they fit).
    - For track notes or any other change, edit the generated files, then run `CONISO validate-plan .coniso/assignments/<track>-w<n>.md` until it prints `PLAN OK`. Never send its findings to the auditor.
 4. Read the PLAN line. `MATCHES SCHEDULE` means every row is what the schedule planned: skip step 5.
-5. **Audit.** Spawn `coniso:auditor` with model `sonnet` and prompt `AUDIT delegation .coniso/assignments/<track>-w<n>.md · context: .coniso/sprint.json`.
+5. **Audit.** Spawn `coniso:auditor` with model `sonnet` and prompt `AUDIT delegation .coniso/assignments/<track>-w<n>.md · context: .coniso/assignments/<track>-w<n>.ctx.md` (the one-line-per-ticket slice the script wrote; never `sprint.json`).
    - Answer each objection in the table: `O<n> accepted` (and fix the assignments) or `O<n> overruled: <reason>`.
    - Then run `CONISO ledger add --unit <track>-w<n> --leader manager --kind delegation --raised N --accepted A --overruled O`.
    - Skip the audit only when you dispatch exactly one unit exactly as the schedule planned it.
