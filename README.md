@@ -19,11 +19,11 @@ Long Claude Code sessions on large codebases degrade in two predictable ways:
 - **Context bleed.** One session accumulates file dumps, diffs, test logs and dead ends from every task it has touched. Later work is reasoned against that noise, instructions from early in the session get diluted, and quality drifts.
 - **Token waste.** The same session re-reads all of that history on every turn. Ad hoc subagents help, but they usually hand raw output back up the chain, so the main context fills up anyway, just more slowly.
 
-Coniso fixes this structurally rather than with prompting:
+Coniso is built to reduce both, mostly through structure rather than prompting alone:
 
-- **Every agent gets one packet in a fresh context** and returns at most **12 lines**. Detail (briefs, assignments, diffs, test logs, reports) lives in files under `.coniso/`, and agents pass *paths*, never contents. Raw output never climbs the hierarchy.
+- **Every subagent gets one packet in a fresh context** and is told to return at most **12 lines**. Detail (briefs, assignments, diffs, test logs, reports) lives in files under `.coniso/`, and agents are told to pass *paths*, not contents. That keeps raw output from climbing the hierarchy. It's a rule agents follow, not a limit the script enforces.
 - **A plain Python script, not an LLM, owns the bookkeeping:** scheduling, dependency waves, sprint state, git worktrees, diffs, merges, plan validation and roadmap edits. No tokens are spent on graph math or rule checks a script can do.
-- **The main session stays small** for hours, and a sprint survives a restart ("director, continue").
+- **The main session is built to stay small** for hours, and a sprint survives a restart ("director, continue").
 
 ## Roles
 
@@ -68,7 +68,7 @@ Install it from one source only. A copy added from Anthropic's directory on clau
 
 ### Requirements
 
-- **Claude Code** with plugin support and nested subagents. Developed and tested on **v2.1.292**. Older 2.1.x releases may work but aren't tested.
+- **Claude Code** with plugin support. Nested subagents give full parallelism; without them, relay mode keeps sprints working with less (see below). Developed and tested on **v2.1.292**. Older 2.1.x releases may work but aren't tested.
 - **Python 3.8+** on `PATH` as `python3`, `python` or `py -3`. Standard library only.
 - **git**: each ticket builds in its own worktree. For non-code work, init with `--no-worktrees`.
 - Windows, macOS and Linux.
@@ -147,9 +147,9 @@ Roadmap work needs no Coniso setup and works in non-git folders too.
 Being straight about this:
 
 - **Coniso does not use fewer total tokens than doing the same work yourself in one session.** A ticket costs one builder plus at least one reviewer, and leaders add auditors. Each agent reads the brief and its own assignment. That overhead is the price of independent review and isolated contexts.
-- **What it does is keep every context small and bounded.** The main session doesn't grow with the work, so it doesn't pay to re-read hours of history on every turn, and quality doesn't decay late in a long session. For long sessions on large codebases this is usually a net saving. For a ten-minute fix it isn't. Just ask Claude directly.
-- **It spends where it matters:** haiku for mechanical packets, sonnet as the workhorse, opus only for load-bearing work and leadership. A packet that fails climbs one tier at a time. S and M tickets run as one engineer plus one reviewer, with no team overhead.
-- **Parallelism multiplies spend rate.** A Director sprint can run up to ~20 subagents at once. That finishes sooner but burns your plan's usage or API budget faster.
+- **What it does is keep every context small and bounded.** The main session doesn't grow with the work, so it doesn't pay to re-read hours of history on every turn, and late work isn't reasoned against the noise of early work. For long sessions on large codebases we expect this to be a net saving, though we haven't published measurements. For a ten-minute fix it isn't. Just ask Claude directly.
+- **It spends where it matters:** haiku for mechanical packets, sonnet as the workhorse, opus only for load-bearing work and leadership. A ticket that fails twice moves up one model tier, and a third fail stops and asks you. S and M tickets run as one engineer plus one reviewer, with no team overhead.
+- **Parallelism multiplies spend rate.** By default, a Director sprint can run up to ~20 subagents at once. That finishes sooner but burns your plan's usage or API budget faster.
 - **Levers:**
   - `/coniso:director … light` halves concurrent builds and uses single reviewers.
   - Prefer `/coniso:lead` for single tickets over a full sprint.
@@ -218,9 +218,9 @@ Being straight about this:
 
 ## Guarantees and notes
 
-- **Nothing is ever pushed.** Coniso never marks roadmap tickets done and never stashes or touches your uncommitted work.
+- **Coniso doesn't push.** The script has no push command, and agents are told never to push. Sprint sync never marks roadmap tickets done, and merges refuse to run over uncommitted work rather than stashing or touching it.
 - **What it runs and touches:** your build and test commands, git (worktrees, branches, squash merges on your current branch), and its own files under `.coniso/` and `.git/info/exclude`. With your yes, it edits `.claude/settings.local.json`. Agents' own web lookups (scouts) go through Claude Code's tools. Coniso sends nothing anywhere itself.
-- **The merge gate can't be talked past.** Each merge squashes the ticket, runs build and tests on the integrated result, and resets main untouched if anything fails or conflicts.
+- **The merge gate checks the integrated code.** A ticket needs a passing review. Each merge then squashes it, runs your build and tests on the integrated result, and resets the branch untouched if anything fails or conflicts. Limits: with no build or test command set, preflight warns and the merge rests on review alone; `merge --force` and `--no-test` overrides exist (`--force` is reserved for your say-so); `--no-worktrees` mode has no merge gate; and it's a rule, not a lock, so an agent with shell access could still commit directly.
 - Worktrees live in `.coniso/wt/`. If a tool in your repo scans dot-folders (some eslint or jest setups), add `.coniso` to its ignore list.
 - Leave the main checkout alone during a sprint: merges need it clean.
 - **Lessons loop:** when you critique an agent's work, a one-line lesson goes to `docs/agent-feedback/<specialty>.md`, and engineers read it before working.

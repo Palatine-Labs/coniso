@@ -30,6 +30,7 @@ A context-and-usage pass: fewer Director tool calls, fewer auditor round-trips t
 - The Director reads only the last Lessons (`retro --lessons`), restarts after every 3 merged waves, rotates the Review Lead every 3 rounds and managers every 3 waves, and moves fix rounds to a fresh unit above ~100k reported tokens (was ~200k).
 - Manager and Review Lead set `omitClaudeMd: true`; manager, Review Lead and lead set `experimental.cacheTtl: 1h`.
 - `status --json` is compact.
+- README: describe the merge gate's limits, the 12-line return as a rule rather than an enforced limit, the real escalation path, and relay mode in the requirements. Stop presenting unmeasured token savings as fact.
 
 ### Fixed
 - The script no longer crashes printing `→` on Windows consoles that default to cp1252.
