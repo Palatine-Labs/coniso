@@ -6,7 +6,7 @@ by **Palatine Labs** · pronounced *CON-ih-so* (short for **con**text **iso**lat
 
 > Call a role and it brings its team. Every agent works in a clean, small context, and a deterministic script handles the bookkeeping so no model has to.
 
-**Status: v1.1.** The core is stable and in daily use. Expect sharp edges on uncommon setups. Please report them as [issues](https://github.com/Palatine-Labs/coniso/issues).
+**Status: v1.2.** The core is stable and in daily use. Expect sharp edges on uncommon setups. Please report them as [issues](https://github.com/Palatine-Labs/coniso/issues).
 
 **Claude Code only.** Coniso runs a local Python script, git worktrees and nested subagents, so it needs Claude Code: the terminal, an IDE extension, or the desktop app's Code tab. In claude.ai chat it installs but has nothing to run on. Cowork is untested.
 

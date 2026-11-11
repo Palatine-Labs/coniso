@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-10
+
 A usage pass on small work and on test runs. Review stays on every ticket that merges; what shrinks is the ceiling a reviewer is given for a small diff, the number of times a suite runs per ticket, and the context an auditor reads.
 
 ### Added
@@ -97,7 +99,8 @@ First public release.
 - **Engineer specialties.** builder, tester, ui, net, level, audio, docs, batch, artisan and synth, plus forging new specialties and a lessons loop (`docs/agent-feedback/`).
 - **Stack-pack mechanism** (`init --stack <name>`) for project-specific rules, specialties, checks, review lens and proving pass. No packs ship in 1.0.0.
 
-[Unreleased]: https://github.com/Palatine-Labs/coniso/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/Palatine-Labs/coniso/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/Palatine-Labs/coniso/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/Palatine-Labs/coniso/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/Palatine-Labs/coniso/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/Palatine-Labs/coniso/releases/tag/v1.0.0

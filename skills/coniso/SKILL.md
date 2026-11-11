@@ -29,7 +29,7 @@ Builders never judge their own work. Finished tickets go to reviewers, which the
 
 ## Setup (once per session, every call)
 
-1. If `.coniso/config.json` is missing, or `.coniso/VERSION` differs from 1.1.0, initialise from the repo root:
+1. If `.coniso/config.json` is missing, or `.coniso/VERSION` differs from 1.2.0, initialise from the repo root:
    `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/coniso.py" init --roadmap <docs/roadmap/X.html> --test "<test cmd>" [--build "<cmd>"] [--setup "<cmd per new worktree>"] [--link node_modules] [--copy .env.local] [--stack <pack>|none]`
    - Use `python` or `py -3` if `python3` is missing.
    - **Permissions are opt-in.** Init never edits Claude settings. When it (or preflight) prints `PERMISSIONS NOT CONFIGURED`, ask the user once, in one message: list exactly what it would add to `.claude/settings.local.json` (local, git-excluded): the allow rules, and any env fix it names. On yes run `CONISO permissions --write`; on no run `CONISO permissions --decline` and carry on (agents may hit prompts). Never write or edit the settings file yourself.
