@@ -1,5 +1,5 @@
 # CONISO BRIEF — {title}
-Updated: {date} · Owner: Director · Every agent reads this. Keep everything above "Track notes" under ~150 lines.
+Updated: {date} · Owner: Director · Every agent reads this. Keep everything above "Track notes" under ~150 lines and 12 KB; detail goes to `.coniso/maps/*.md` with a pointer here.
 
 ## Coniso script
 Repo root: `{root}` — every `.coniso/…` path below is under it.

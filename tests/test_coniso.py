@@ -788,5 +788,103 @@ class BatchLand(Repo):
         self.assertIsNotNone(s["tickets"]["P1-02"]["wt"])          # its worktree is kept for the fix round
 
 
+class QuickFix(Repo):
+    def fail_ticket(self, tid="P1-01"):
+        self.build(tid)
+        self.c("review", tid)
+        self.report(f"{tid}.fix.md", "1. out.txt:1 says hello, must say hi\n")
+        rep = self.verdict_report(tid, f"{tid}.R1", "fail", ["A1-A2 unmet — out.txt:1"], fix=f".coniso/reports/{tid}.fix.md")
+        self.c("verdict", tid, "--report", str(rep))
+        self.assertEqual(self.sprint()["tickets"][tid]["state"], "failed")
+
+    def test_small_fix_is_checked_and_sent_to_a_delta_review(self):
+        self.fail_ticket()
+        out = self.c("quickfix", "P1-01", "begin")
+        self.assertIn("QUICKFIX P1-01 open", out)
+        self.assertIn("limit 20 changed lines in 2 file(s)", out)
+        self.assertIn("P1-01.fix.md", out)
+        (self.wt("P1-01") / "out.txt").write_text("hi\n", encoding="utf-8")
+        out = self.c("quickfix", "P1-01", "done", "--note", "greeting corrected to hi")
+        self.assertIn("QUICKFIX OK P1-01: 2 line(s) in 1 file(s) · checks PASS · state built · quick fix 1 this sprint", out)
+        self.assertIn("Next: review P1-01 --delta", out)
+        t = self.sprint()["tickets"]["P1-01"]
+        self.assertEqual(t["state"], "built")
+        self.assertEqual(t["quickfixes"], 1)
+        self.assertNotIn("quickfix", t)
+        fix = (self.root / ".coniso" / "reports" / "P1-01.fix.md").read_text(encoding="utf-8")
+        self.assertIn("Quick fix by director", fix)
+        self.assertIn("greeting corrected to hi", fix)
+        self.assertIn("out.txt", fix)
+        out = self.c("review", "P1-01", "--delta")
+        self.assertIn("SPAWN coniso:reviewer-lite", out)
+        self.assertIn("SCOPE: delta", (self.root / ".coniso" / "assignments" / "P1-01.R2.md").read_text(encoding="utf-8"))
+        self.assertIn("PASS (cached", self.c("test", "P1-01"))        # the reviewer's run reuses the quick fix's
+        self.assertIn("Quick fixes: 1 — P1-01", self.c("retro"))
+
+    def test_oversized_fix_is_refused_and_abort_restores_the_builders_work(self):
+        self.fail_ticket()
+        self.c("quickfix", "P1-01", "begin")
+        wt = self.wt("P1-01")
+        (wt / "out.txt").write_text("x\n" * 30, encoding="utf-8")
+        (wt / "new.txt").write_text("n\n", encoding="utf-8")
+        out = self.c("quickfix", "P1-01", "done", "--note", "too much", code=1)
+        self.assertIn("QUICKFIX TOO BIG P1-01: 32 changed line(s) in 2 file(s)", out)
+        self.assertEqual(self.sprint()["tickets"]["P1-01"]["state"], "failed")
+        out = self.c("quickfix", "P1-01", "abort")
+        self.assertIn("aborted", out)
+        self.assertEqual((wt / "out.txt").read_text(encoding="utf-8"), "hello\n")
+        self.assertFalse((wt / "new.txt").exists())
+        t = self.sprint()["tickets"]["P1-01"]
+        self.assertNotIn("quickfix", t)
+        self.assertEqual(t["state"], "failed")
+        self.assertNotIn("quickfixes", self.sprint())
+
+    def test_failing_checks_refuse_the_fix(self):
+        (self.root / "check.py").write_text("import os, sys\nsys.exit(1 if os.path.exists('bad.txt') else 0)\n", encoding="utf-8")
+        self.git("add", "-A")
+        self.git("commit", "-qm", "check")
+        self.sh(PY, str(SCRIPT), "init", "--test", f'"{PY}" check.py')
+        self.fail_ticket()
+        self.c("quickfix", "P1-01", "begin")
+        (self.wt("P1-01") / "bad.txt").write_text("b\n", encoding="utf-8")
+        out = self.c("quickfix", "P1-01", "done", "--note", "breaks the checks", code=1)
+        self.assertIn("QUICKFIX TEST FAIL P1-01", out)
+        self.assertIn("One attempt only", out)
+        self.assertEqual(self.sprint()["tickets"]["P1-01"]["state"], "failed")
+        self.c("quickfix", "P1-01", "abort")
+        self.assertFalse((self.wt("P1-01") / "bad.txt").exists())
+
+    def test_refuses_the_wrong_state_a_missing_note_and_a_fix_never_opened(self):
+        self.build("P1-01")
+        self.assertIn("P1-01 is built", self.c("quickfix", "P1-01", "begin", code=1))
+        self.assertIn("no open quick fix", self.c("quickfix", "P1-01", "done", "--note", "x", code=1))
+        self.c("review", "P1-01")
+        rep = self.verdict_report("P1-01", "P1-01.R1", "pass", ["A1 met — out.txt:1", "A2 met — log"])
+        self.c("verdict", "P1-01", "--report", str(rep))
+        self.c("quickfix", "P1-01", "begin")                         # a passed ticket with minors to clear
+        (self.wt("P1-01") / "out.txt").write_text("hello!\n", encoding="utf-8")
+        self.assertIn("needs --note", self.c("quickfix", "P1-01", "done", code=1))
+        self.assertIn("QUICKFIX OK", self.c("quickfix", "P1-01", "done", "--note", "minor: punctuation"))
+        self.assertEqual(self.sprint()["tickets"]["P1-01"]["state"], "built")   # passed -> built: reviewed again before it merges
+        self.assertIn("P1-01 is built", self.c("land", "P1-01", code=1))
+
+
+class SetupHardening(Repo):
+    schedule = False
+
+    def test_init_git_excludes_the_local_claude_settings_even_when_permissions_are_declined(self):
+        ex = (self.root / ".git" / "info" / "exclude").read_text(encoding="utf-8").split()
+        self.assertIn("/.claude/settings.local.json", ex)
+        self.assertIn("/.coniso/", ex)
+
+    def test_preflight_warns_on_a_brief_that_is_short_in_lines_but_heavy(self):
+        b = self.root / ".coniso" / "BRIEF.md"
+        text = b.read_text(encoding="utf-8")
+        b.write_text(text.replace("## Track notes", "- " + "very long rule " * 1000 + "\n## Track notes"), encoding="utf-8")
+        out = self.c("preflight", code=None)
+        self.assertIn("brief core is", out)
+        self.assertIn("KB", out)
+
+
 if __name__ == "__main__":
     unittest.main()

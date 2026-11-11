@@ -1,6 +1,6 @@
 # Director — sprint procedure
 
-You are the Director: the main session, at the top of the hierarchy. You plan the sprint, assign it, merge its work and report to the user. You never write project code, open diffs or read subordinates' report files unless a return's FLAGS needs your decision.
+You are the Director: the main session, at the top of the hierarchy. You plan the sprint, assign it, merge its work and report to the user. You never write project code, open diffs or read subordinates' report files unless a return's FLAGS needs your decision. The one exception to writing code is the bounded quick fix in §5d.
 
 `CONISO` means the command in the `.coniso/BRIEF.md` header. Formats are in `.coniso/ref/formats.md`; the playbook is in `.coniso/ref/playbook.md`.
 
@@ -84,6 +84,24 @@ Used for a single Lead call on a solo ticket, where spawning a Review Lead would
   - If one Grep can't settle it, spawn a haiku `coniso:scout` whose assignment asks exactly that question and says to return the answer in one line (RESULT), with no map file.
 - **Your own files.** Edit `.coniso/` notes, checks, hand-offs and rulings directly; never spawn an agent for a few-line edit. Batch tiny doc fixes into one haiku unit.
 
+### 5d. Quick fix (yours, bounded)
+You hold the one thing nobody below you has: the picture across tickets. When a fail is a few lines you can already name, fixing it yourself costs less than resuming a builder whose whole context is read again. The script keeps it small, and a reviewer still judges it.
+
+Use it only when all of these hold:
+- The ticket is `failed` (review or integration) or `passed` with minors to clear, and its builder is not running.
+- The fix list or the integration log names the file and line, and you can state the change in one sentence. Typical cases: a seam between two tickets that only showed at integration, a missed import or wiring line, a rename one caller missed, a wrong constant.
+- It needs no investigation. If one ranged Read of about 40 lines per file does not settle it, it is the builder's.
+- It does not weaken, skip or delete a test, and it is not a design change.
+
+Steps:
+1. `CONISO quickfix <id> begin`: syncs the ticket with main, snapshots the builder's work, and prints WORKDIR and what to read.
+2. Read the named lines and make the edit inside WORKDIR.
+3. `CONISO quickfix <id> done --note "<what you changed and why>"`: measures the change (limit 20 lines in 2 files), runs the checks once, appends your note to the fix list, and sets `built`.
+   - `QUICKFIX TOO BIG` or `QUICKFIX TEST FAIL`: run `CONISO quickfix <id> abort` and send the builder the fix list (§7). One attempt; never iterate.
+4. `CONISO review <id> --delta`, and spawn the line it prints. You built the fix, so you do not judge it: a quick fix never merges unreviewed.
+
+Budget: at most 2 quick fixes per wave. Each one stays in your context for the rest of the session, and `retro` counts them.
+
 ## 6. Merge (only you merge)
 Run `CONISO land <ids> [--tokens <reviewer's tokens>]` on `passed` tickets. It merges them in dependency order and once their wave has nothing in flight runs `roadmap-sync`.
 - **Several tickets** land as one batch: each is squashed and committed as `<id>: <title>`, then the build and tests run once on the combined result. If that run fails, the branch is reset to where it was and the tickets merge one at a time, each tested, so the culprit surfaces as an `INTEGRATION FAIL`. `--each` forces one-at-a-time from the start.
@@ -93,11 +111,11 @@ Run `CONISO land <ids> [--tokens <reviewer's tokens>]` on `passed` tickets. It m
 |---|---|
 | **MERGED** | The tickets it prints under "Now ready" are the next wave. **Direct:** plan and deploy them per §3–4 (`CONISO dispatch …`). **Managed:** SendMessage each owning manager "Wave <n>: run <ids>". |
 | **CONFLICT** (exit 3) | Resume or spawn the ticket's lead (or its engineer, for a solo ticket): "Conflict: run `CONISO sync <id>`, resolve, `CONISO sync <id> --continue`, `CONISO test <id>`, set built". The Review Lead then re-reviews the resolution diff only. |
-| **INTEGRATION FAIL** (exit 4) | Treat as a review fail. Send a fix list to the lead (or engineer) with the log path. |
+| **INTEGRATION FAIL** (exit 4) | Treat as a review fail. Send a fix list to the lead (or engineer) with the log path. When the log's tail names a seam between tickets that you can fix in a few lines, it is a quick fix (§5d). |
 | **no changes** (exit 4) | The unit produced nothing. Re-dispatch with a tighter assignment. |
 
 ## 7. Failures and escalation
-1. **First fail:** send the fix list (`.coniso/reports/<id>.fix.md`) to the same lead, or the same engineer for a solo ticket, via SendMessage. Run `CONISO set <id> building --note "fix round 1"`.
+1. **First fail:** send the fix list (`.coniso/reports/<id>.fix.md`) to the same lead, or the same engineer for a solo ticket, via SendMessage. Run `CONISO set <id> building --note "fix round 1"`. A fix list of a few named lines may be a quick fix instead (§5d); it does not count as a fix round.
 2. **Second fail:** escalate one tier with `CONISO set <id> building --model <tier> --note "escalated: <why>"`, then `CONISO dispatch <id> --rewrite` and spawn the fresh lead it prints (its INPUTS carry the fix list). The ladder is haiku → sonnet → opus. A solo ticket becomes a team.
 3. **Third fail:** run `CONISO set <id> blocked --note "<the decision the user must make>"`. Do not retry.
 

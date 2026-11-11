@@ -5,7 +5,7 @@ description: Hierarchical agent team for programming work, plus the HTML prompt 
 
 # Coniso
 
-The main session is always the top of the hierarchy: the Director for a full sprint, and a lighter Director for smaller calls. It talks to the user, owns `.coniso/`, merges, and syncs the roadmap. It never does line work, never opens diffs, and reads only 12-line returns and script output.
+The main session is always the top of the hierarchy: the Director for a full sprint, and a lighter Director for smaller calls. It talks to the user, owns `.coniso/`, merges, and syncs the roadmap. It never does line work, never opens diffs, and reads only 12-line returns and script output. The one exception is the Director's bounded quick fix (director.md §5d): at most 20 lines in 2 files, checked by the script and always re-reviewed.
 
 ## Roadmap (no Coniso setup needed)
 For anything about the roadmap itself (create, status sync, what's next, expand a phase, revise tickets), read `.coniso/ref/roadmap.md`, or `${CLAUDE_PLUGIN_ROOT}/skills/coniso/references/roadmap.md` before init, and follow it. Roadmap work never needs init, preflight or a sprint. Building tickets does: that's the calls below.
@@ -42,7 +42,7 @@ Builders never judge their own work. Finished tickets go to reviewers, which the
 3. Run `CONISO preflight`.
    - **Dirty checkout:** ask the user to commit or stash. Never stash their work yourself.
    - **RELAY MODE reported:** spawning works as described under Spawn mechanics.
-4. Brief: `.coniso/BRIEF.md` needs the objective, pinned versions, commands and codebase map filled in. Fill it from repo files. For a large unfamiliar codebase, send 1–3 scouts (haiku) to write `.coniso/maps/*.md` and point the brief at them. Keep the core brief (everything above "Track notes") under 150 lines: every agent reads it. `preflight` warns when it is over, and `CONISO brief-trim` moves Decisions log rows older than the current sprint to `.coniso/maps/decisions.md`, leaving a pointer.
+4. Brief: `.coniso/BRIEF.md` needs the objective, pinned versions, commands and codebase map filled in. Fill it from repo files. For a large unfamiliar codebase, send 1–3 scouts (haiku) to write `.coniso/maps/*.md` and point the brief at them. Keep the core brief (everything above "Track notes") under 150 lines and 12 KB: every agent reads it on every spawn, and long lines cost as much as many lines. `preflight` warns when it is over, and `CONISO brief-trim` moves Decisions log rows older than the current sprint to `.coniso/maps/decisions.md`, leaving a pointer.
 
 ## Calls
 

@@ -570,6 +570,9 @@ def cmd_init(a):
         text = ex.read_text(encoding="utf-8") if ex.exists() else ""
         if "/.coniso/" not in text.split():
             ex.write_text(text + ("" if text.endswith("\n") or not text else "\n") + "/.coniso/\n", encoding="utf-8")
+        # Claude Code stores "don't ask again" approvals there, command strings included, so keep it out of commits
+        # whether or not the user lets Coniso write to it.
+        exclude_path("/.claude/settings.local.json")
     if not a.roadmap and not conf.get("roadmap"):
         found = resolve_roadmap(must=False)
         if found:
@@ -830,10 +833,11 @@ def cmd_preflight(a):
         line("INFO", "Coniso commands not allowed (user declined); agents may stop on permission prompts")
     else:
         line("WARN", "PERMISSIONS NOT CONFIGURED: agents may stop on prompts. Ask the user, then `permissions --write` or `permissions --decline`")
-    core = brief_core_lines()
-    if core > BRIEF_CORE_MAX:
-        line("WARN", f"brief core is {core} lines (over {BRIEF_CORE_MAX}; every agent reads it): trim it, "
-                     "`brief-trim` moves older Decisions log rows to .coniso/maps/decisions.md")
+    core, core_bytes = brief_core_lines(), brief_core_bytes()
+    if core > BRIEF_CORE_MAX or core_bytes > BRIEF_CORE_MAX_BYTES:
+        line("WARN", f"brief core is {core} lines / {core_bytes // 1024} KB (limit {BRIEF_CORE_MAX} lines or "
+                     f"{BRIEF_CORE_MAX_BYTES // 1024} KB; every agent reads it on every spawn): trim it, move detail to "
+                     ".coniso/maps/*.md and point at it; `brief-trim` moves older Decisions log rows to .coniso/maps/decisions.md")
     c = load_sprint(required=False)
     if c:
         live = [tid for tid, t in c["tickets"].items() if t["state"] in ACTIVE]
@@ -846,6 +850,7 @@ def cmd_preflight(a):
 
 
 BRIEF_CORE_MAX = 150
+BRIEF_CORE_MAX_BYTES = 12 * 1024    # about 3k tokens; a line count alone is met by ever-longer lines
 DECISIONS_ARCHIVE = "maps/decisions.md"
 
 
@@ -860,6 +865,14 @@ def brief_core_lines():
             break
         n += 1
     return n
+
+
+def brief_core_bytes():
+    """UTF-8 size of BRIEF.md above "## Track notes"."""
+    f = L / "BRIEF.md"
+    if not f.exists():
+        return 0
+    return len(f.read_text(encoding="utf-8").split("\n## Track notes")[0].encode("utf-8"))
 
 
 def cmd_brief_trim(a):
@@ -1911,6 +1924,9 @@ def cmd_retro(a):
     conf_ = [tid for tid, t in c["tickets"].items() if any("conflict" in h["note"] for h in t["history"])]
     if conf_:
         lines.append("Merge conflicts: " + ", ".join(conf_))
+    if c.get("quickfixes"):
+        lines.append(f"Quick fixes: {c['quickfixes']} — " + ", ".join(
+            f"{tid}×{t['quickfixes']}" if t["quickfixes"] > 1 else tid for tid, t in c["tickets"].items() if t.get("quickfixes")))
     tk = token_totals(c)
     if tk:
         lines += tk
@@ -2168,14 +2184,15 @@ def cmd_dispatch(a):
     print("\n".join(spawns))
 
 
-def diff_stats(t, conf):
-    """(changed lines, changed files) of a ticket's worktree against its base, new files included; (None, None)
-    when there is no worktree to measure."""
-    if not (conf.get("worktrees", True) and t.get("wt") and t.get("base")):
+def diff_stats(t, conf, base=None):
+    """(changed lines, changed files) of a ticket's worktree against its base (or the given commit), new files
+    included; (None, None) when there is no worktree to measure."""
+    base = base or t.get("base")
+    if not (conf.get("worktrees", True) and t.get("wt") and base):
         return None, None
     wt = Path(t["wt"])
     git(["add", "-N", "--"] + pathspec_excludes(conf)[2:] + ["."], wt, check=False)
-    r = git(["diff", "--numstat", t["base"]] + pathspec_excludes(conf), wt, check=False)
+    r = git(["diff", "--numstat", base] + pathspec_excludes(conf), wt, check=False)
     lines = files = 0
     for ln in r.stdout.splitlines():
         parts = ln.split("\t")
@@ -2445,6 +2462,115 @@ def cmd_verdict(a):
             out.append(f"RULED {ruling} {tid} — {summary}" + (" · verdict audit required (playbook)" if audit else ""))
         save_sprint(c)
     print("\n".join(out))
+
+
+QUICKFIX_STATES = ("failed", "passed")
+
+
+def cmd_quickfix(a):
+    """A bounded fix made by the leader who holds the cross-ticket picture, inside the ticket's worktree.
+    begin: sync with main, snapshot the builder's work, open the fix.
+    done:  measure the change against the limit, run the checks once, set built for a delta review.
+    abort: drop the edits and leave the worktree as the builder left it.
+    The script enforces the size limit and the single attempt, so a quick fix cannot quietly become a fix round,
+    and it never sets passed: a reviewer still judges the change."""
+    conf = cfg()
+    if not conf.get("worktrees", True):
+        die("quick fixes need worktrees")
+    max_lines, max_files = conf.get("quickfix_max_lines", 20), conf.get("quickfix_max_files", 2)
+    c = load_sprint()
+    t = ticket(c, a.id)
+    if not t.get("wt") or not Path(t["wt"]).exists():
+        die(f"{a.id} has no worktree; a fix after the merge is an XS ticket (adhoc --size XS)")
+    wt = Path(t["wt"])
+    q = t.get("quickfix")
+    if a.action == "begin":
+        if q:
+            die(f"{a.id} already has an open quick fix: finish it with `quickfix {a.id} done --note …` or `quickfix {a.id} abort`")
+        if t["state"] not in QUICKFIX_STATES:
+            die(f"{a.id} is {t['state']}; a quick fix takes a failed ticket (review or integration) or a passed one with minors to clear")
+        r = redirect_out()
+        try:
+            with r:
+                cmd_sync(argparse.Namespace(id=a.id, cont=False))
+        except SystemExit as e:
+            print(r.text.strip())
+            print(f"Not a quick fix: {a.id} conflicts with main. Send its builder the conflict.")
+            sys.exit(e.code or 3)
+        snapshot(ticket(load_sprint(), a.id), conf)
+        base = git(["rev-parse", "HEAD"], wt).stdout.strip()
+        with Lock():
+            c = load_sprint()
+            t = ticket(c, a.id)
+            t["quickfix"] = {"base": base, "from": t["state"], "ts": now_z()}
+            note(t, t["state"], "quick fix opened")
+            save_sprint(c)
+        hints = [f"{label} {p(x)}" for label, x in (("fix list", L / "reports" / f"{safe(a.id)}.fix.md"),
+                                                    ("integration log", L / "reports" / f"{safe(a.id)}.merge-test.log"))
+                 if x.exists()]
+        print(f"QUICKFIX {a.id} open · WORKDIR {p(wt)} · limit {max_lines} changed lines in {max_files} file(s) · one attempt")
+        if hints:
+            print("Read only: " + " · ".join(hints) + " · and the lines they name")
+        print(f"Then: quickfix {a.id} done --note \"<what you changed and why>\"   (too big or a failing test: quickfix {a.id} abort)")
+        return
+    if not q:
+        die(f"{a.id} has no open quick fix; start with `quickfix {a.id} begin`")
+    if a.action == "abort":
+        git(["reset", "--hard", "-q", q["base"]], wt, check=False)
+        keep = [x.rstrip("/") for x in conf.get("link_dirs", []) + conf.get("copy_files", [])]
+        for ln in git(["status", "--porcelain", "--untracked-files=all"], wt, check=False).stdout.splitlines():
+            rel = ln[3:].strip().strip('"')
+            if ln.startswith("?? ") and not any(rel == k or rel.startswith(k + "/") for k in keep):
+                try:
+                    (wt / rel).unlink()     # a file the quick fix created; the snapshot left none untracked
+                except OSError:
+                    pass
+        with Lock():
+            c = load_sprint()
+            t = ticket(c, a.id)
+            t.pop("quickfix", None)
+            note(t, t["state"], "quick fix aborted")
+            save_sprint(c)
+        print(f"QUICKFIX {a.id} aborted · the worktree is back at the builder's work · send the builder the fix list")
+        return
+    # done
+    if not (a.note or "").strip():
+        die("quickfix done needs --note \"<what you changed and why>\": the delta reviewer reads it")
+    lines, files = diff_stats(t, conf, base=q["base"])
+    if not lines and not files:
+        die(f"{a.id}: nothing changed since the quick fix opened (`quickfix {a.id} abort` closes it)")
+    if lines > max_lines or files > max_files:
+        print(f"QUICKFIX TOO BIG {a.id}: {lines} changed line(s) in {files} file(s); the limit is {max_lines} lines in {max_files} file(s).")
+        print(f"That is a fix round, not a quick fix: `quickfix {a.id} abort`, then send the builder the fix list.")
+        sys.exit(1)
+    names = git(["diff", "--name-only", q["base"]] + pathspec_excludes(conf), wt, check=False).stdout.split()
+    log = L / "reports" / f"{safe(a.id)}.test.log"
+    tree = tree_id(wt, conf) if conf.get("test_cache", True) else None
+    code, text = run_checks(wt, conf, log)
+    if code not in (None, 0):
+        print(f"QUICKFIX TEST FAIL {a.id} (exit {code}) · log {p(log)}")
+        print("\n".join(text.strip().splitlines()[-15:]))
+        print(f"One attempt only: `quickfix {a.id} abort`, then send the builder the fix list and this log.")
+        sys.exit(1)
+    fixf = L / "reports" / f"{safe(a.id)}.fix.md"
+    with fixf.open("a", encoding="utf-8") as fh:
+        fh.write(f"\n\n## Quick fix by {a.from_} — {now_z()}\n{a.note.strip()}\n"
+                 f"Changed {lines} line(s) in: {', '.join(names) or '?'} (since {q['base'][:7]}). "
+                 f"Review exactly this change and its regression risk.\n")
+    with Lock():
+        c = load_sprint()
+        t = ticket(c, a.id)
+        t.pop("quickfix", None)
+        t["quickfixes"] = t.get("quickfixes", 0) + 1
+        c["quickfixes"] = n = c.get("quickfixes", 0) + 1
+        if tree and code == 0:
+            t["test_cache"] = {"tree": tree, "code": 0, "ts": now_z(), "log": p(log)}
+        t["state"] = "built"
+        note(t, "built", f"quick fix by {a.from_}: {lines} line(s) in {files} file(s) — {a.note.strip()[:160]}")
+        save_sprint(c)
+    print(f"QUICKFIX OK {a.id}: {lines} line(s) in {files} file(s) · checks {'PASS' if code == 0 else 'none configured'} "
+          f"· state built · quick fix {n} this sprint")
+    print(f"Next: review {a.id} --delta   (a quick fix never merges unreviewed)")
 
 
 def land_batch(order, conf, branch):
@@ -2939,6 +3065,13 @@ def main():
     s.add_argument("--tokens", type=int, help="the reviewer's reported tokens, recorded on the first ticket")
     s.add_argument("--role", help="role for --tokens (default reviewer)")
     s.set_defaults(fn=cmd_land)
+
+    s = sp.add_parser("quickfix", help="a bounded fix by the Director inside a ticket's worktree: begin, done --note, abort")
+    s.add_argument("id")
+    s.add_argument("action", choices=["begin", "done", "abort"])
+    s.add_argument("--note", help="done: what you changed and why (the delta reviewer reads it)")
+    s.add_argument("--from", dest="from_", default="director")
+    s.set_defaults(fn=cmd_quickfix)
 
     s = sp.add_parser("validate-handoff", help="mechanical hand-off checks: evidence per acceptance item, test log, no hidden [VERIFY]/TODO")
     s.add_argument("id")

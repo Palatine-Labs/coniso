@@ -17,7 +17,11 @@ A usage pass on small work and on test runs. Review stays on every ticket that m
 - **Batch land.** `land` with several tickets squashes and commits each, then runs the integration checks once on the combined result. On any failure it resets the branch and merges them one at a time, each tested, so the culprit still surfaces as `INTEGRATION FAIL`. `--each` forces one-at-a-time.
 - **Auditor context slices.** Every validated table comes with `<table>.ctx.md`, one line per ticket it covers. `dispatch`, `review` and `validate-plan` write it and print a `CONTEXT` pointer when a plan deviates. Agents are told to hand auditors this file, never `sprint.json`.
 
+- **Director quick fix.** `quickfix <id> begin | done --note … | abort` lets the Director make one bounded fix in a failed (review or integration) or passed ticket's worktree instead of resuming its builder. `begin` syncs with main and snapshots the builder's work; `done` refuses more than 20 changed lines or 2 files, runs the checks once, appends the note to the fix list and sets `built`; the change then goes to a delta review and never merges unreviewed. `abort` restores the builder's work. `retro` counts quick fixes.
+
 ### Changed
+- `preflight` also warns when the brief's core is over 12 KB: a 150-line limit alone is met by ever-longer lines.
+- `init` always adds `.claude/settings.local.json` to `.git/info/exclude`, whether or not you let Coniso write permissions. Claude Code stores "don't ask again" approvals there, command strings included.
 - `MERGED` lines say how the integration checks were satisfied (`checks PASS`, `checks PASS (cached …)`, `checks: batch`).
 - Haiku batch reviews and delta re-reviews are dispatched to `coniso:reviewer-lite`.
 

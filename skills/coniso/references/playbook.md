@@ -94,6 +94,7 @@ Every escalation is recorded with `CONISO set --model`.
 
 ## Budget
 - Cut breadth (fewer concurrent units) before cutting review.
+- **Quick fix.** The Director may make one bounded fix itself (`CONISO quickfix`, director.md §5d) when a fail is a few named lines: at most 20 changed lines in 2 files, one attempt, checks run by the script, and always a delta review afterwards. It replaces a builder resume, never a review. At most 2 per wave.
 - Never skip the reviewer on a ticket that merges.
 - The schedule keeps 4 slots for review out of the 20-agent session cap.
 - **Usage habits that keep review intact:**
