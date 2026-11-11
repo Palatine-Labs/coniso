@@ -6,7 +6,7 @@ by **Palatine Labs** · pronounced *CON-ih-so* (short for **con**text **iso**lat
 
 > Call a role and it brings its team. Every agent works in a clean, small context, and a deterministic script handles the bookkeeping so no model has to.
 
-**Status: v1.0.** The core is stable and in daily use. Expect sharp edges on uncommon setups. Please report them as [issues](https://github.com/Palatine-Labs/coniso/issues).
+**Status: v1.2.** The core is stable and in daily use. Expect sharp edges on uncommon setups. Please report them as [issues](https://github.com/Palatine-Labs/coniso/issues).
 
 **Claude Code only.** Coniso runs a local Python script, git worktrees and nested subagents, so it needs Claude Code: the terminal, an IDE extension, or the desktop app's Code tab. In claude.ai chat it installs but has nothing to run on. Cowork is untested.
 
@@ -39,7 +39,7 @@ The main session is always the top of the hierarchy. You call a role, and it bri
 
 Support roles, spawned by leaders, never by you:
 
-- **Reviewer** (`coniso:reviewer`): adversarial review against the acceptance criteria. Every finding needs evidence. It also hunts for gamed tests: deleted or loosened tests, hard-coded expected values, TODOs claimed as done. **Builders never judge their own work.**
+- **Reviewer** (`coniso:reviewer`, and `coniso:reviewer-lite` for small diffs: patch tickets, delta re-reviews, haiku batches): adversarial review against the acceptance criteria, within a tool-call budget the script sizes from the diff. Every finding needs evidence. It also hunts for gamed tests: deleted or loosened tests, hard-coded expected values, TODOs claimed as done. **Builders never judge their own work.**
 - **Auditor** (`coniso:auditor`): a model one tier cheaper than the leader it audits. It challenges judgment calls (model tier, packet size, ordering, scope) and review rulings. Every overrule is logged, so the retro shows whose routing is going wrong.
 - **Scout** (`coniso:scout`): read-only recon of a codebase area or docs question, written to a short map file.
 
@@ -154,8 +154,23 @@ Being straight about this:
   - `/coniso:director … light` halves concurrent builds and uses single reviewers.
   - Prefer `/coniso:lead` for single tickets over a full sprint.
   - When cost has to drop, Coniso cuts breadth (fewer concurrent units) before it ever cuts review.
-- **Idle cost is small:** about 600 tokens per session while installed, whether or not you use it.
+- **The main session stays lean by construction (v1.1):**
+  - **Compound commands.** `dispatch`, `review`, `verdict` and `land` turn the Director's per-ticket bookkeeping (worktree, assignment file, plan validation, review setup, verdict rules, merge, roadmap sync) into a handful of script calls, chained with `&&`. A solo ticket now costs the Director about 5 tool calls instead of about 13.
+  - **Mechanical rules go to the script, not to auditors.** Reviewers record their own verdicts with `verdict`, which applies the ruling rules and asks a leader only when judgment is needed. Plans that are exactly the scheduled plan (`MATCHES SCHEDULE`) and lead hand-offs (`validate-handoff`) are checked without an auditor. Auditors still review every judgment call.
+  - **Quiet run.** The Director writes nothing between tool calls. An optional output style makes that session-wide (below).
+  - **Measured, not guessed.** Each agent's reported token use is recorded per ticket (`--tokens`), and `retro` totals it per ticket and per role.
+  - **Coordinators rotate.** A fresh Review Lead every 3 review rounds, a fresh manager every 3 waves, and a restart point for the Director every 3 merged waves keep long-lived contexts short. All state is on disk.
+- **Small fixes get a small path.** An XS ticket (`adhoc --size XS`) is a patch: one engineer told to make the smallest change, then one light reviewer (`coniso:reviewer-lite`, sonnet at medium effort) with a budget sized to the diff. Every reviewer's budget is sized that way (12 tool calls under 60 changed lines, up to the full 40 or 60 above 300), so small tickets stop paying for a ceiling they never used. An XS diff that grows past 80 lines or 4 files is promoted to the normal review by the script, never downgraded.
+- **Your test suite runs once per tree, not three times per ticket.** `test` reuses a passing run while the worktree is unchanged, `land` reuses it when the squash is byte-identical to the tree it passed on, and several passed tickets land as one batch with one integration run (a failure falls back to one at a time). `--fresh` forces a rerun.
+- **The Director can make a bounded quick fix.** When a review or integration fail comes down to a few named lines (a seam between two tickets, a missed import), `quickfix` lets the Director fix it in the ticket's worktree instead of resuming a builder. The script enforces the limit (20 changed lines in 2 files, one attempt), runs the checks, and sends the change to a delta review. It never merges unreviewed.
+- **Auditors read a slice, not the sprint.** Every validated plan comes with a `.ctx.md` of one line per ticket; that, not the ever-growing `sprint.json`, is the auditor's context.
+- **Idle cost is small:** about 600 tokens per session while installed, whether or not you use it. The compaction hook prints nothing outside an active sprint.
 - **Rule of thumb:** use Coniso on a usage-based plan with headroom or an API budget you've set limits on. Watch your first sprint's usage before running unattended (`permissions --accept-edits`).
+
+## Hooks and output style
+
+- **Compaction hook.** Coniso ships one plugin hook (`hooks/hooks.json`): on `SessionStart` with matcher `compact`, it prints the open sprint board and the current wave, so a Director whose context was just compacted picks up from files instead of memory. In a project without an active sprint (`.coniso/sprint.json`) it prints nothing and exits 0. It runs `python3`, `python` or `py -3`, whichever works, through Claude Code's hook shell (Git Bash on Windows).
+- **Quiet output style (optional).** `Coniso Quiet` (`output-styles/quiet.md`) tells Claude to write nothing between tool calls and speak only for status lines, decisions you own, errors and final reports. It keeps Claude Code's coding instructions and is never forced on. Pick it in `/config` → Output style for long sprints.
 
 ## Commands
 
@@ -178,15 +193,22 @@ Being straight about this:
 | `init [--stack <pack>\|none]`, `preflight` | Install or refresh; check git state, roadmap validity, nesting mode and permissions |
 | `permissions [--write [--accept-edits] \| --decline \| --remove]` | Show, grant, decline or undo Coniso's entries in `.claude/settings.local.json` |
 | `schedule [--phase P] [--tickets ids] [--limit N] [--add] [--formation managed\|direct]` | Plan a sprint |
-| `validate-plan <table> [--slots N] [--no-files]` | Check a delegation plan: one owner per file per step, complete assignment files, slot limits |
-| `adhoc <id> --title … [--size] [--model] [--accept …] [--prompt-file]` | Add a non-roadmap ticket |
-| `status [id] [--json] [--open]`, `set <id> <state> [--note] [--verdict] [--model]` | Sprint state |
+| `validate-plan <table> [--slots N] [--no-files]` | Check a delegation plan: one owner per file per step, complete assignment files, slot limits; `MATCHES SCHEDULE` when it is exactly the scheduled plan (no audit needed); writes `<table>.ctx.md`, the auditor's one-line-per-ticket context |
+| `validate-handoff <id>` | Check a lead's hand-off: evidence per acceptance item, a passing test log, no unlisted `[VERIFY]`/TODO |
+| `adhoc <id> --title … [--size XS\|S\|M\|L] [--model] [--accept …] [--prompt-file]` | Add a non-roadmap ticket; `XS` is a patch (smallest change, light reviewer) |
+| `status [id] [--json] [--open] [--field name]`, `set <id> [<state>] [--note] [--verdict] [--model] [--tokens N --role R]` | Sprint state; `--tokens` records an agent's reported token use for `retro` |
 | `wt add\|path\|remove <id>` | Worktrees on branch `coniso/<id>`, based on your current HEAD |
-| `diff <id>` / `diff --range A..B`, `test <id\|main>` | Diff and test output go to files; the console gets a summary |
+| `diff <id>` / `diff --range A..B`, `test <id\|main> [--fresh]` | Diff and test output go to files; the console gets a summary. `test` reuses a passing run while the worktree's tree is unchanged |
 | `sync <id> [--continue]` | Bring main into a ticket's worktree to resolve conflicts |
 | `merge <id>` | Squash, integration test, commit; resets cleanly on conflict or failure |
+| `dispatch <ids> [--specialty …] [--review lead\|self] [--from U] [--plan name] [--rewrite]` | Worktree, complete assignment file and spawn line per ticket; a validated wave table when several |
+| `review <ids> [--panel [ids]] [--delta] [--model opus] [--plan name] [--tokens N]` | Sync with main, measure the diff, reviewer assignments per review plan with a BUDGET sized to it (patch, batch and delta reviews go to `reviewer-lite`; an oversized patch is promoted), set reviewing, spawn lines |
+| `verdict <id[,id]> --report <file>` | Record a reviewer verdict; prints `RULED pass\|fail` when the rules settle it, `NEEDS RULING: <reason>` when a leader must |
+| `land <ids> [--tokens N] [--each] [--fresh]` | Merge passed tickets in dependency order, several as one batch with one integration run (falls back to one at a time on failure); roadmap-sync once their wave is clear; flags a restart point every 3 waves |
+| `quickfix <id> begin\|done --note …\|abort` | A bounded Director fix in a failed or passed ticket's worktree: sync and snapshot, then a size check (20 lines / 2 files), one check run, state `built` for a delta review; `abort` restores the builder's work |
 | `ledger add\|stats` | Auditor objection log |
-| `roadmap-sync`, `retro`, `close` | Write back, report, archive |
+| `brief-trim [--before YYYY-MM-DD]` | Move Decisions log rows older than the current sprint out of the brief, into `.coniso/maps/decisions.md` |
+| `roadmap-sync`, `retro [--lessons]`, `close` | Write back, report (tokens per ticket and role, oversized feedback files; `--lessons` prints only the last Lessons), archive |
 | `roadmap new\|show\|next\|validate\|extract\|write\|set\|log\|upgrade` | Roadmap file tools (work without `.coniso/`) |
 
 ## Stack packs
@@ -197,7 +219,7 @@ Being straight about this:
 - `stack.json`, with optional `check_cmd`, `setup_cmd`, `build_cmd` and `review_lens`;
 - `proving.md`, a pass the Director runs after each wave.
 
-`{python}` and `{stack}` in commands expand to the interpreter and the installed pack folder. **v1.0 ships no packs.** The mechanism is there for your own. Contributions are welcome.
+`{python}` and `{stack}` in commands expand to the interpreter and the installed pack folder. **Coniso ships no packs yet.** The mechanism is there for your own. Contributions are welcome.
 
 ## Guarantees and notes
 

@@ -25,15 +25,19 @@ INPUTS: <paths, prior reports — pointers only, never pasted content>
 BOUNDARIES: <out of scope; decisions that are not yours>
 DONE WHEN: <testable criteria — for a ticket, its acceptance items by number>
 SCOPE: full | delta   (reviewers only; delta = fix list + files the fix touched; omit for full)
+BUDGET: <tool-call ceiling and probe count, sized from the diff>   (reviewers only; `CONISO review` writes it)
+LENS: <lens>                                                 (reviewers only)
+ON DONE: <CONISO set <id> built …>                           (solo engineers only: they record built themselves)
 REVIEW: <review lead serves | dispatch your own reviewer>   (leaders only)
 SLOTS: <max concurrent subordinates>                         (leaders only)
 RETURN: standard return + detail in .coniso/reports/<unit>.md
 ```
+- `CONISO dispatch` (engineers and leads) and `CONISO review` (reviewers) write these files with every field filled and a closing `GENERATED: coniso` line. Write one by hand only for managers, a lead's engineers, quick tasks and scouts.
 - If a haiku engineer could misread the packet, it is under-specified.
 - If it needs more than 5 lines of background, the background belongs in the brief or a track note.
 
 ## Spawn prompt
-A single line with the absolute path: `Assignment: <repo root>/.coniso/assignments/<unit>.md`. Use `subagent_type: coniso:<role>` and pass `model`.
+A single line with the absolute path: `Assignment: <repo root>/.coniso/assignments/<unit>.md`. Use `subagent_type: coniso:<role>` and pass `model`. `dispatch` and `review` print it ready to use: `SPAWN coniso:<role> · model <m> · prompt: Assignment: <path>`. The role for a small diff (a patch ticket, a delta re-review, a haiku batch) is `coniso:reviewer-lite`; spawn what the line says.
 Inside assignment files, write every path as absolute (repo root from the brief header), because agents' file tools need absolute paths.
 
 ## Standard return — every agent's final message, at most 12 lines
@@ -58,10 +62,11 @@ Auditor: <O1 accepted | O1 overruled: reason | NO OBJECTIONS>
 - **Step** is a whole number. Units with the same step run at the same time; a unit that consumes another's output gets a later step.
 - **Owns** lists files or globs separated by commas (`src/ui/**, src/app.ts`). A leader's row may name its ticket instead (`ticket P2-03`). A solo engineer building a whole ticket alone in its worktree may own `**` (nobody else works there).
 - Tables with a single unit are optional (see the playbook). Every row has an assignment file `.coniso/assignments/<unit>.md` before validation.
-- Run `CONISO validate-plan <table file>` and fix its findings until it prints `PLAN OK`. It enforces D3 (one owner per file within a step), D5 (each assignment file has an absolute WORKDIR, OBJECTIVE, OWNS, DONE WHEN and RETURN) and D6 (units per step within the slot limit). Only then does the auditor see the plan, for the judgment rules.
+- Next to every validated table the script writes `<table>.ctx.md`: one line per ticket the plan covers (title, size, model, effort, review plan, state, attempts, deps, formation). It is the delegation auditor's context file. Never hand an auditor `sprint.json`.
+- Run `CONISO validate-plan <table file>` and fix its findings until it prints `PLAN OK`. It enforces D3 (one owner per file within a step), D5 (each assignment file has an absolute WORKDIR, OBJECTIVE, OWNS, DONE WHEN and RETURN) and D6 (units per step within the slot limit). Only then does the auditor see the plan, for the judgment rules, unless the line also says `MATCHES SCHEDULE` (every row is the scheduled ticket-level plan, with script-written assignments): then there is nothing to audit.
 
 ## Audit request (the auditor's assignment file, or the one-line prompt)
-`AUDIT <delegation|verdict|handoff> <file to audit> · context: <one or two paths>`
+`AUDIT <delegation|verdict|handoff> <file to audit> · context: <the plan's .ctx.md for a delegation; one or two report paths for a verdict>`
 
 ## Auditor reply
 ```
@@ -73,15 +78,17 @@ The leader then:
 1. writes `O<n> accepted` or `O<n> overruled: <reason>` into the audited file;
 2. runs `CONISO ledger add --unit <u> --leader <role> --kind <kind> --raised N --accepted A --overruled O [--reason "O2: …"]`.
 
-## Verdict — a reviewer's return body, also in its report
+## Verdict — a reviewer's return body, also at the top of its report
 ```
 VERDICT <ticket> · <reviewer unit> · lens <lens>: pass | pass-with-fixes | fail
 A1 met — <evidence: test name / file:line / log line>
 A2 unmet — <evidence>
-FINDINGS: [blocker|major|minor] <claim> — <evidence>
+FINDINGS: [blocker|major|minor] <claim> — <evidence>   (one per line; "suspicion" marks one without evidence)
 TESTS: <CONISO test result · log path>
 FIX LIST: .coniso/reports/<ticket>.fix.md   (fail only)
+RULING: <line printed by CONISO verdict>
 ```
+`CONISO verdict <id> --report <file>` parses this block. It voids a verdict that skips an acceptance item or gives one no evidence; any blocker or unmet item fails; minors never fail. It prints `RULED pass|fail` when those rules settle the round, and `NEEDS RULING: <reason>` for a panel split, a major, a void, or a reviewer verdict the rules contradict.
 
 ## Fix list — `.coniso/reports/<ticket>.fix.md`
 Number each problem and give for each:

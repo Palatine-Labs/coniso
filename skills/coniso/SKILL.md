@@ -5,7 +5,7 @@ description: Hierarchical agent team for programming work, plus the HTML prompt 
 
 # Coniso
 
-The main session is always the top of the hierarchy: the Director for a full sprint, and a lighter Director for smaller calls. It talks to the user, owns `.coniso/`, merges, and syncs the roadmap. It never does line work, never opens diffs, and reads only 12-line returns and script output.
+The main session is always the top of the hierarchy: the Director for a full sprint, and a lighter Director for smaller calls. It talks to the user, owns `.coniso/`, merges, and syncs the roadmap. It never does line work, never opens diffs, and reads only 12-line returns and script output. The one exception is the Director's bounded quick fix (director.md §5d): at most 20 lines in 2 files, checked by the script and always re-reviewed.
 
 ## Roadmap (no Coniso setup needed)
 For anything about the roadmap itself (create, status sync, what's next, expand a phase, revise tickets), read `.coniso/ref/roadmap.md`, or `${CLAUDE_PLUGIN_ROOT}/skills/coniso/references/roadmap.md` before init, and follow it. Roadmap work never needs init, preflight or a sprint. Building tickets does: that's the calls below.
@@ -21,7 +21,7 @@ For anything about the roadmap itself (create, status sync, what's next, expand 
 | Engineer | `coniso:engineer` | sonnet · medium (haiku mechanical, opus hard) | — | itself |
 
 Support roles, spawned by leaders:
-- **Auditor** (`coniso:auditor`) audits the judgment calls in every leader's delegation plan, and every review ruling and hand-off claim. It runs one tier cheaper than its leader: opus leader → sonnet auditor, sonnet leader → haiku auditor. The mechanical plan rules (D3 ownership, D5 assignment files, D6 slots) are checked by `CONISO validate-plan` instead, before the auditor sees a plan.
+- **Auditor** (`coniso:auditor`) audits the judgment calls in leaders' delegation plans and review rulings. It runs one tier cheaper than its leader: opus leader → sonnet auditor, sonnet leader → haiku auditor. Mechanical rules go to the script instead: `CONISO validate-plan` checks D3 ownership, D5 assignment files and D6 slots, and prints `MATCHES SCHEDULE` when every row is exactly the scheduled ticket-level plan (nothing left to judge, so no audit); `CONISO validate-handoff` checks a lead's hand-off claim.
 - **Reviewer** (`coniso:reviewer`) is the adversarial reviewer.
 - **Scout** (`coniso:scout`) does read-only recon and writes maps.
 
@@ -29,12 +29,12 @@ Builders never judge their own work. Finished tickets go to reviewers, which the
 
 ## Setup (once per session, every call)
 
-1. If `.coniso/config.json` is missing, or `.coniso/VERSION` differs from 1.0.1, initialise from the repo root:
+1. If `.coniso/config.json` is missing, or `.coniso/VERSION` differs from 1.2.0, initialise from the repo root:
    `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/coniso.py" init --roadmap <docs/roadmap/X.html> --test "<test cmd>" [--build "<cmd>"] [--setup "<cmd per new worktree>"] [--link node_modules] [--copy .env.local] [--stack <pack>|none]`
    - Use `python` or `py -3` if `python3` is missing.
    - **Permissions are opt-in.** Init never edits Claude settings. When it (or preflight) prints `PERMISSIONS NOT CONFIGURED`, ask the user once, in one message: list exactly what it would add to `.claude/settings.local.json` (local, git-excluded): the allow rules, and any env fix it names. On yes run `CONISO permissions --write`; on no run `CONISO permissions --decline` and carry on (agents may hit prompts). Never write or edit the settings file yourself.
    - **Unattended sprints:** only when the user asks for them, ask separately before running `CONISO permissions --accept-edits` (sets acceptEdits as the project's default mode). `CONISO permissions --remove` undoes everything Coniso added.
-   - **Stacks.** `--stack <name>` installs a stack pack from the plugin's `stacks/` folder: rules added to the brief, extra specialties in `.coniso/specialties/`, an optional check command run after build and test, an optional review lens and proving pass. Coniso 1.0 ships no packs; the mechanism is there for your own (see README → Stack packs).
+   - **Stacks.** `--stack <name>` installs a stack pack from the plugin's `stacks/` folder: rules added to the brief, extra specialties in `.coniso/specialties/`, an optional check command run after build and test, an optional review lens and proving pass. Coniso ships no packs yet; the mechanism is there for your own (see README → Stack packs).
    - Init finds the roadmap itself when the repo has exactly one. Find the test command in the repo (CLAUDE.md, package.json, *.csproj). Ask the user only if it isn't there.
    - **No roadmap yet?** Fine for one-off lead or engineer calls (they become adhoc tickets). For a sprint, offer to create one first (`roadmap.md` → Creating a roadmap).
    - No git repo? Offer `git init` plus a first commit (worktrees need it), or init with `--no-worktrees` for non-code work.
@@ -42,7 +42,7 @@ Builders never judge their own work. Finished tickets go to reviewers, which the
 3. Run `CONISO preflight`.
    - **Dirty checkout:** ask the user to commit or stash. Never stash their work yourself.
    - **RELAY MODE reported:** spawning works as described under Spawn mechanics.
-4. Brief: `.coniso/BRIEF.md` needs the objective, pinned versions, commands and codebase map filled in. Fill it from repo files. For a large unfamiliar codebase, send 1–3 scouts (haiku) to write `.coniso/maps/*.md` and point the brief at them. Keep the core brief under 150 lines.
+4. Brief: `.coniso/BRIEF.md` needs the objective, pinned versions, commands and codebase map filled in. Fill it from repo files. For a large unfamiliar codebase, send 1–3 scouts (haiku) to write `.coniso/maps/*.md` and point the brief at them. Keep the core brief (everything above "Track notes") under 150 lines and 12 KB: every agent reads it on every spawn, and long lines cost as much as many lines. `preflight` warns when it is over, and `CONISO brief-trim` moves Decisions log rows older than the current sprint to `.coniso/maps/decisions.md`, leaving a pointer.
 
 ## Calls
 
@@ -57,13 +57,14 @@ Builders never judge their own work. Finished tickets go to reviewers, which the
   - For merged work: give it a git range in the assignment. Its findings come back as proposed tickets. Add them per `roadmap.md` (Operations → Findings): one ticket per finding, test-first prompt.
 - **Lead** ("lead on P2-04", or a described feature):
   1. Create the ticket: `CONISO schedule --tickets P2-04`, or `CONISO adhoc <ID> --title "…" --size M --model sonnet --accept "…" --prompt-file <file>`.
-  2. Follow the formation schedule printed:
-     - **team** (non-haiku tickets of size L, or with effort xhigh): spawn `coniso:lead` at the printed model. Its assignment says no Review Lead serves, so it dispatches its own reviewer.
-     - **solo** (other S and M tickets, and every haiku ticket): run `CONISO wt add <id>`, write one engineer assignment with the printed WORKDIR, and spawn `coniso:engineer` at the printed model. When it returns `done`, run `CONISO set <id> built`, then review it per director.md §5b (review without a Review Lead).
-  3. On a pass, merge per director.md §6, then run `CONISO roadmap-sync`.
+     - **Small fix?** `--size XS` makes it a patch: one engineer told to make the smallest change, then one light reviewer (`coniso:reviewer-lite`) with a budget sized to the diff. The script promotes it to the normal review if the diff grows past 80 lines or 4 files. This is the path for a bug found after a merge or a one-file change the user asks for.
+  2. Run `CONISO dispatch <id> [--specialty <name>]` (chained to step 1 with `&&`) and spawn the `SPAWN` line it prints.
+     - **team** (non-haiku tickets of size L, or with effort xhigh): a `coniso:lead` whose assignment says no Review Lead serves, so it dispatches its own reviewer.
+     - **solo** (other S and M tickets, and every haiku ticket): a `coniso:engineer` in a fresh worktree. It records `built` itself. Then review it per director.md §5b: `CONISO review <id> --tokens <n>`, spawn the reviewer line, and act on the `RULED` / `NEEDS RULING` line its return carries.
+  3. On a pass, run `CONISO land <id>`: it merges per director.md §6 and runs `roadmap-sync`.
 - **Engineer** ("engineer, rename X"):
   - For a quick task that doesn't deserve a ticket: write `.coniso/assignments/<id>.md` with WORKDIR set to the main checkout and spawn `coniso:engineer`. Check its result yourself. No worktree, no merge.
-  - Any roadmap ticket goes through the Lead call instead, so it gets a worktree and a reviewer. S and M tickets automatically become one solo engineer plus one reviewer.
+  - Any roadmap ticket goes through the Lead call instead, so it gets a worktree and a reviewer. S and M tickets automatically become one solo engineer plus one reviewer; XS tickets a patch engineer plus a light reviewer. A fix that should merge is an XS Lead call, never an Engineer call.
 
 ## Spawn mechanics (all roles)
 
@@ -80,12 +81,15 @@ Builders never judge their own work. Finished tickets go to reviewers, which the
 
 - **Files carry the detail.** Brief, assignments, ticket packets, reports, diffs and test logs live in `.coniso/`. Agents pass paths, never contents.
 - **Every agent returns at most 12 lines** (format in formats.md). Leaders open a report file only when FLAGS asks for a decision.
-- **The script does the bookkeeping.** Scheduling, state, worktrees, diffs, tests, merges, plan validation and roadmap edits are deterministic commands, so no agent reasons through them.
+- **Auditors get a slice, not the sprint.** Every validated table comes with `<table>.ctx.md`, one line per ticket it covers. That file is the delegation auditor's context; `sprint.json` never is.
+- **Tests run once per tree.** `CONISO test` reuses a passing run on an unchanged worktree, `land` reuses it when the squash is byte-identical, and several passed tickets land with one integration run. Pass `--fresh` to force a rerun.
+- **The script does the bookkeeping.** Scheduling, state, worktrees, assignment files, diffs, tests, merges, plan validation, the mechanical verdict rules and roadmap edits are deterministic commands (`dispatch`, `review`, `verdict` and `land` bundle the common sequences), so no agent reasons through them. Chain consecutive bookkeeping commands with `&&` in one Bash call.
 - **Minimal reading.** Agents read the brief once, their own assignment, and only their own specialty file. Continued agents get "Brief updated: <line>", not a re-read.
 - **Cheapest model that does the job well.** The playbook is in `.coniso/ref/playbook.md`. When cost has to drop, cut breadth before cutting review.
 
 ## Standing rules
 
+- **Quiet run.** The main session writes nothing between tool calls. It speaks only for the per-wave status line, FLAGS that need the user, gates, errors and the final report.
 - The user's explicit instructions override the playbook.
 - Never push.
 - Never set a roadmap ticket to done. Sync sets `review`; the user confirms.

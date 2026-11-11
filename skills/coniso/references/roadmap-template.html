@@ -224,7 +224,7 @@ function barHTML(c, total) {
 }
 function chips(t) {
   const m = models[t.model]; const out = [];
-  out.push(`<span class="pill" title="Size: S 1–2 h, M 2–5 h, L 5–10 h">${esc(t.size || "?")}</span>`);
+  out.push(`<span class="pill" title="Size: XS under 1 h (a patch), S 1–2 h, M 2–5 h, L 5–10 h">${esc(t.size || "?")}</span>`);
   out.push(`<span class="pill" title="${esc(t.modelWhy || "")}">${esc(m ? (m.short || m.name) : t.model)}${t.effort ? " · " + esc(t.effort) : ""}</span>`);
   if (t.review) out.push('<span class="pill" title="Gets a fresh-session review">review</span>');
   if (isGate(t)) out.push('<span class="pill">gate</span>');
