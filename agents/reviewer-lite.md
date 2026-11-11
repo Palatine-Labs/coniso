@@ -1,6 +1,6 @@
 ---
 name: reviewer-lite
-description: Coniso light reviewer — adversarial review of a small diff: a patch (XS) ticket, a delta re-review after a fix round, or a batch of haiku tickets. Same evidence standard and verdict format as the reviewer, inside the budget its assignment sets. Never edits project code. Spawn only by Coniso.
+description: Coniso light reviewer — adversarial review of a small diff (a patch ticket, a delta re-review after a fix round, or a batch of haiku tickets). Same evidence standard and verdict format as the reviewer, inside the budget its assignment sets. Never edits project code. Spawn only by Coniso.
 model: sonnet
 effort: medium
 tools: Read, Write, Grep, Glob, Bash

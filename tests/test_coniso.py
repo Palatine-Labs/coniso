@@ -886,5 +886,42 @@ class SetupHardening(Repo):
         self.assertIn("KB", out)
 
 
+class Frontmatter(unittest.TestCase):
+    """Agent and skill frontmatter must be plain YAML. A value with an unquoted ": " fails to parse, and Claude Code
+    then loads the agent by filename with its model, effort and tools silently dropped."""
+
+    def blocks(self):
+        files = sorted((PLUGIN / "agents").glob("*.md")) + sorted((PLUGIN / "skills").glob("*/SKILL.md"))             + sorted((PLUGIN / "output-styles").glob("*.md"))
+        self.assertGreater(len(files), 10)
+        for f in files:
+            lines = f.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(lines[0], "---", f.name)
+            yield f, lines[1:lines.index("---", 1)]
+
+    def test_top_level_values_are_yaml_safe(self):
+        for f, block in self.blocks():
+            keys = set()
+            for ln in block:
+                if not ln.strip() or ln.startswith((" ", "	")):
+                    continue                                    # nested mapping lines (experimental: …)
+                key, sep, value = ln.partition(":")
+                self.assertTrue(sep and key.strip(), f"{f.name}: not a key: value line: {ln[:60]}")
+                keys.add(key.strip())
+                value = value.strip()
+                if not value or value[0] in "\"'":
+                    continue
+                self.assertNotIn(": ", value, f"{f.name}: quote the {key} value, it holds ': '")
+                self.assertNotIn(" #", value, f"{f.name}: quote the {key} value, it holds ' #'")
+                self.assertNotIn(value[0], "[{&*!|>%@`", f"{f.name}: quote the {key} value")
+            self.assertIn("description", keys, f.name)
+
+    def test_every_agent_the_script_spawns_exists(self):
+        names = {f.stem for f in (PLUGIN / "agents").glob("*.md")}
+        src = SCRIPT.read_text(encoding="utf-8")
+        for agent in ("engineer", "lead", "reviewer", "reviewer-lite"):
+            self.assertIn(agent, names)
+        self.assertIn('"agent": "reviewer-lite"', src)
+
+
 if __name__ == "__main__":
     unittest.main()
