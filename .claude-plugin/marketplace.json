@@ -9,7 +9,7 @@
     {
       "name": "coniso",
       "source": "./",
-      "version": "1.3.0-dev.2",
+      "version": "1.3.0-dev.3",
       "description": "Context-isolated agent teams for Claude Code: call a role and it brings its team.",
       "category": "development"
     }

@@ -19,7 +19,7 @@ import tempfile
 import time
 from pathlib import Path
 
-VERSION = "1.3.0-dev.2"
+VERSION = "1.3.0-dev.3"
 STATES = ["queued", "building", "built", "reviewing", "passed", "failed",
           "conflict", "merged", "blocked", "dropped"]
 ACTIVE = {"building", "built", "reviewing", "passed", "failed", "conflict"}
@@ -37,15 +37,70 @@ def die(msg, code=1):
     sys.exit(code)
 
 
+def kill_tree(proc):
+    """Stop a process and every process it started, then the process itself.
+
+    `Popen.kill()` stops one process. With `shell=True` that one process is the shell, and what the shell started
+    (a check run and its compilers) keeps running with nobody reading its result: on Windows it also keeps the output
+    pipe open, so the caller hangs until it ends. Here the whole tree goes: `taskkill /T /F` on Windows, the process
+    group elsewhere (`run_limited` starts the command in a group of its own). Ported from Project Sol's fix."""
+    if os.name == "nt":
+        try:
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True, timeout=60)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    else:
+        try:
+            import signal
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (OSError, AttributeError):
+            pass
+    try:
+        proc.kill()
+    except OSError:
+        pass
+    try:
+        proc.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        pass
+
+
+def run_limited(cmd, cwd, shell, timeout, env):
+    """Run a command with a time limit. On the limit, stop its whole process tree and return exit code 124 with the
+    output it had written so far, followed by a TIMEOUT line.
+
+    Output goes to temporary files, not pipes: a process that outlives the kill cannot keep this call waiting, and
+    the output written before the limit is kept for the log."""
+    def text_of(fh):
+        fh.seek(0)
+        return fh.read().decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
+
+    with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+        extra = {} if os.name == "nt" else {"start_new_session": True}
+        proc = subprocess.Popen(cmd, cwd=str(cwd) if cwd else None, shell=shell,
+                                stdout=out, stderr=err, env=env, **extra)
+        try:
+            code = proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            kill_tree(proc)
+            note_ = f"TIMEOUT after {timeout}s: the process tree was stopped"
+            so, se = text_of(out), text_of(err)
+            return subprocess.CompletedProcess(cmd, 124, so, se + ("" if not se or se.endswith("\n") else "\n") + note_)
+        except BaseException:
+            kill_tree(proc)      # Ctrl-C or a kill of this script must not leave the tree running either
+            raise
+        return subprocess.CompletedProcess(cmd, code, text_of(out), text_of(err))
+
+
 def run(cmd, cwd=None, shell=False, timeout=None, env=None):
     try:
+        if timeout is not None:
+            return run_limited(cmd, cwd, shell, timeout, env)
         return subprocess.run(cmd, cwd=str(cwd) if cwd else None, shell=shell,
                               capture_output=True, text=True, encoding="utf-8",
-                              errors="replace", timeout=timeout, env=env)
+                              errors="replace", env=env)
     except FileNotFoundError as e:
         die(f"command not found: {e}")
-    except subprocess.TimeoutExpired:
-        return subprocess.CompletedProcess(cmd, 124, "", f"TIMEOUT after {timeout}s")
 
 
 def git(args, cwd, check=True, env=None):
@@ -87,8 +142,8 @@ L = ROOT / ".coniso"
 class Lock:
     """Cross-platform lock file. Held only around state and git-ref changes, never during tests."""
 
-    def __init__(self):
-        self.path = L / ".lock"
+    def __init__(self, path=None):
+        self.path = path or (L / ".lock")
 
     def __enter__(self):
         deadline = time.time() + 90
@@ -592,13 +647,26 @@ def cmd_init(a):
     for d in ("tickets", "assignments", "reports", "maps", "specialties", "ref", "wt", "archive"):
         (L / d).mkdir(parents=True, exist_ok=True)
     plugin = SCRIPT.parent.parent if (SCRIPT.parent.parent / "skills" / "coniso").is_dir() else None
+    replaced = []
+    old_version = (L / "VERSION").read_text(encoding="utf-8").strip() if (L / "VERSION").exists() else None
     if plugin:
         src = plugin / "skills" / "coniso" / "references"
         if (L / "ref").exists():
+            replaced.append(f"ref/ ({sum(1 for x in (L / 'ref').rglob('*') if x.is_file())} reference pages)")
             shutil.rmtree(L / "ref")
         shutil.copytree(src, L / "ref")
-        if SCRIPT != (L / "coniso.py").resolve():
+        old = L / "coniso.py"
+        if SCRIPT != old.resolve():
+            if old.exists() and old.read_bytes() != SCRIPT.read_bytes():
+                bak = L / "backup" / f"coniso-{old_version or 'unknown'}-{dt.datetime.now().strftime('%Y%m%d-%H%M%S')}.py"
+                bak.parent.mkdir(exist_ok=True)
+                shutil.copy2(old, bak)
+                replaced.append(f"coniso.py {old_version or '?'} -> {VERSION} (the replaced copy is kept at {p(bak)})")
             shutil.copy2(SCRIPT, L / "coniso.py")
+    local = L / "local"
+    if not local.exists():
+        local.mkdir()
+        (local / "README.md").write_text(LOCAL_README, encoding="utf-8")
     elif not any((L / "ref").iterdir()):
         print("WARN: run init from the plugin copy once so references get installed into .coniso/ref/")
     if is_git:
@@ -625,6 +693,33 @@ def cmd_init(a):
         val = getattr(a, key)
         if val is not None:
             conf[f"{key}_cmd"] = val
+    for key in ("check_slots", "test_timeout", "merge_timeout"):
+        val = getattr(a, key, None)
+        if val is not None:
+            if val:
+                conf[key] = val
+            else:
+                conf.pop(key, None)
+    for key, attr in (("check_process_pattern", "check_pattern"), ("decisions_dir", "decisions_dir"),
+                      ("lessons_dir", "lessons_dir")):
+        val = getattr(a, attr, None)
+        if val is not None:
+            if val:
+                conf[key] = val
+            else:
+                conf.pop(key, None)
+    if getattr(a, "house_rules", None) is not None:
+        conf["house_rules"] = [x for x in a.house_rules.split(",") if x]
+    if getattr(a, "land_hold", None) is not None:
+        conf["land_hold"] = a.land_hold
+    for kv in getattr(a, "env", None) or []:
+        k, _, v = kv.partition("=")
+        if k:
+            env = conf.setdefault("env", {})
+            if v:
+                env[k] = v
+            else:
+                env.pop(k, None)
     if a.link is not None:
         conf["link_dirs"] = [x for x in a.link.split(",") if x]
     if a.copy is not None:
@@ -673,7 +768,21 @@ def cmd_init(a):
         brief.write_text(body, encoding="utf-8")
     if stack:
         write_stack_brief(stack, conf, brief)
-    print(f"CONISO {VERSION} ready in {p(L)}")
+    print(f"CONISO {VERSION} ready in {p(L)}" + (f" (was {old_version})" if old_version and old_version != VERSION else ""))
+    if replaced:
+        print("Replaced: " + "; ".join(replaced))
+    c = load_sprint(required=False)
+    kept = ([f"sprint {c['name']} ({len(c['tickets'])} tickets, "
+             f"{len([1 for t in c['tickets'].values() if t['state'] not in TERMINAL])} open)"] if c else [])
+    kept += [d + "/" for d in ("tickets", "assignments", "reports", "maps", "specialties", "archive")
+             if (L / d).is_dir() and any((L / d).iterdir())]
+    kept += [x for x in ("BRIEF.md", "RETRO.md", "ledger.jsonl", "flaky.jsonl") if (L / x).exists()]
+    yours = sorted(x.name for x in L.iterdir() if x.name not in CONISO_OWNED)
+    if kept or yours:
+        print("Kept: " + ", ".join(kept + ([f"{len(yours)} file(s) of yours ({', '.join(yours[:6])}"
+                                            f"{' …' if len(yours) > 6 else ''})"] if yours else [])))
+    if yours:
+        print("  .coniso/local/ is the folder for your own scripts and notes: init and close never touch it.")
     print(f"Run as: {conf['cmd']}")
     print(f"Mode: {'worktree per ticket' if worktrees else 'in-place (no worktrees)'} · slots {conf['slots']} · roadmap {conf.get('roadmap') or 'none'}")
     print(f"build: {conf.get('build_cmd') or 'unset'} · test: {conf.get('test_cmd') or 'unset'} · setup: {conf.get('setup_cmd') or 'unset'}")
@@ -682,6 +791,19 @@ def cmd_init(a):
     print("Brief: .coniso/BRIEF.md (fill the TBD sections before the first schedule)")
     print_permissions(read_json(L / "config.json", conf) or conf)
 
+
+# Everything else in .coniso/ is the project's: init and close leave it where it is.
+CONISO_OWNED = {"coniso.py", "VERSION", "config.json", "BRIEF.md", "sprint.json", "ledger.jsonl", "RETRO.md",
+                "flaky.jsonl", "landing.json", ".lock", "tickets", "assignments", "reports", "maps", "specialties",
+                "ref", "wt", "archive", "stack", "slots", "backup", "local", "__pycache__"}
+LOCAL_README = """# .coniso/local
+
+Your project's own scripts and notes for Coniso: helper tools, standing notes for agents, anything Coniso should
+never overwrite. `init` (also when it upgrades Coniso) and `close` never write, move or delete anything in here.
+
+Tools that call Coniso should rely only on what `.coniso/ref/contract.md` lists: commands, printed markers, exit
+codes and file locations that do not change within a major version.
+"""
 
 SPAWN_DEPTH = "CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH"
 AGENT_TEAMS = "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"
@@ -884,6 +1006,22 @@ def cmd_preflight(a):
     mem_issues = [x for x in mem_issues if "commits old" not in x]     # stale maps are listed above
     if mem_issues:
         line("INFO", f"memory: {len(mem_issues)} issue(s): " + "; ".join(mem_issues) + " (`memory` for the full report)")
+    if int(conf.get("check_slots") or 0) > 0:
+        with Lock(slots_dir() / ".lock"):
+            st = slot_state(conf)
+        line("INFO", f"check slots: {st['in_use']} of {conf['check_slots']} in use"
+             + (f" · counting `{conf['check_process_pattern']}` processes" if conf.get("check_process_pattern") else "")
+             + (" · land_hold on" if conf.get("land_hold") else "") + (" · QUIET held" if st["quiet"] else ""))
+    m = land_marker()
+    if m and not pid_alive(m.get("pid")):
+        line("WARN", f"INTERRUPTED LAND of {', '.join(m.get('ids', []))} (pid {m.get('pid')} is gone): its branch was "
+                     "not moved. The next land recovers it when the checkout is clean; `land --recover` does it now")
+    strays = stray_processes(conf)
+    if strays:
+        line("INFO", f"{len(strays)} process(es) left running with no parent (an earlier session's agents?). "
+                     "Stop the ones nobody here started:")
+        for x in strays[:8]:
+            out.append("        " + x)
     c = load_sprint(required=False)
     if c:
         live = [tid for tid, t in c["tickets"].items() if t["state"] in ACTIVE]
@@ -997,6 +1135,67 @@ def is_superseded(row):
     return len(cells) > 1 and cells[1].strip().upper().startswith("SUPERSEDED")
 
 
+def project_conf():
+    return read_json(L / "config.json", {}) or {}
+
+
+def feedback_dir():
+    """Where per-specialty lessons live: config lessons_dir, default docs/agent-feedback."""
+    return ROOT / (project_conf().get("lessons_dir") or "docs/agent-feedback")
+
+
+def house_files():
+    """Standing rules every engineer and reviewer reads (config house_rules: globs from the repo root)."""
+    out = []
+    for pat in project_conf().get("house_rules") or []:
+        out += [x for x in sorted(ROOT.glob(pat)) if x.is_file()]
+    return [p(x) for x in dict.fromkeys(out)]
+
+
+RECORD_FIELD = r"^\s*[-*]?\s*\**{}\**\s*:?\**\s*:?\s*(.+)$"
+
+
+def decision_records():
+    """One record per file in config decisions_dir, for projects that keep a decision-record folder (one decision per
+    file, `# 0098 Title`, a `Status:` line) instead of the brief's Decisions log. A Status that says superseded
+    retires the record; an optional `Binds:` line scopes it like the log's Binds cell."""
+    d = project_conf().get("decisions_dir")
+    folder = ROOT / d if d else None
+    if not folder or not folder.is_dir():
+        return []
+    out = []
+    for fp in sorted(folder.glob("*.md")):
+        if fp.name.lower() in ("readme.md", "index.md", "template.md"):
+            continue
+        try:
+            text = fp.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        head = text.splitlines()[:40]
+
+        def field(name):
+            rx = re.compile(RECORD_FIELD.format(name), re.I)
+            return next((m.group(1).strip() for m in map(rx.match, head) if m), "")
+
+        num = re.match(r"(\d+)", fp.name)
+        title = next((ln.lstrip("#").strip() for ln in head if ln.startswith("#")), fp.stem)
+        title = re.sub(r"^\d+\s*[-:.]?\s*", "", title)
+        status = field("status")
+        out.append({"num": num.group(1) if num else fp.stem, "title": title, "status": status, "binds": field("binds"),
+                    "path": fp.relative_to(ROOT).as_posix(), "text": text,
+                    "superseded": bool(re.search(r"supersed", status, re.I))})
+    return out
+
+
+def cited_records(text):
+    """Decision numbers a text cites: "decision 0098", "decisions 0065 and 0067", or a link to 0098-*.md."""
+    nums = set()
+    for m in re.finditer(r"(?i)\bdecisions?\s+((?:\d{3,5}\b(?:\s*(?:,|and|&|or)\s*)?)+)", text):
+        nums.update(int(x) for x in re.findall(r"\d{3,5}", m.group(1)))
+    nums.update(int(x) for x in re.findall(r"(?<![\w-])(\d{3,5})-[\w.-]+\.md", text))
+    return nums
+
+
 def decision_rows():
     """(source, row) for every data row of the brief's Decisions log and of the archive, in file order."""
     out = []
@@ -1024,18 +1223,26 @@ def cmd_decisions(a):
     rows = [(s, r) for s, r in decision_rows() if a.all or not is_superseded(r)]
     if a.grep:
         rows = [(s, r) for s, r in rows if a.grep.lower() in r.lower()]
-    if not rows:
+    recs = [x for x in decision_records() if a.all or not x["superseded"]]
+    if a.grep:
+        recs = [x for x in recs if a.grep.lower() in x["text"].lower()]
+    if not rows and not recs:
         print("no matching decisions" if a.grep else "no decisions recorded")
         return
-    print("| Stamp | Decision | Binds |  (source)")
-    for s, r in rows:
-        print(f"{r.rstrip()}  ({s})")
+    if rows:
+        print("| Stamp | Decision | Binds |  (source)")
+        for s, r in rows:
+            print(f"{r.rstrip()}  ({s})")
+    for x in recs:
+        hit = next((ln.strip() for ln in x["text"].splitlines()[1:] if a.grep and a.grep.lower() in ln.lower()), "")
+        print(f"[{x['num']}] {x['title']}" + (f" · {x['status'][:80]}" if x["status"] else "") + f"  ({x['path']})"
+              + (f"\n    {hit[:160]}" if hit else ""))
 
 
 def memory_report():
     """(summary lines, issue lines) for the long-lived guidance: lessons, decisions, retro lessons and maps."""
     lines, issues = [], []
-    fb = ROOT / "docs" / "agent-feedback"
+    fb = feedback_dir()
     files = sorted(f for f in fb.glob("*.md") if not f.name.endswith(RETIRED_SUFFIX)) if fb.is_dir() else []
     if files:
         parts = []
@@ -1053,6 +1260,15 @@ def memory_report():
         lines.append("Lessons: " + ", ".join(parts))
     else:
         lines.append("Lessons: none yet (docs/agent-feedback/)")
+    recs = decision_records()
+    if recs:
+        lines.append(f"Decision records: {len(recs)} in {project_conf().get('decisions_dir')} "
+                     f"({len([x for x in recs if x['superseded']])} superseded)")
+    if project_conf().get("house_rules"):
+        hf = house_files()
+        lines.append(f"House rules: {len(hf)} file(s) every engineer and reviewer reads")
+        if not hf:
+            issues.append("config house_rules matches no file")
     rows = decision_rows()
     sup = [r for _, r in rows if is_superseded(r)]
     sup_brief = [r for s, r in rows if s == "brief" and is_superseded(r)]
@@ -1108,6 +1324,20 @@ def ticket_decisions(pairs):
         if whole in BINDS_EVERYONE or any(
                 re.search(r"(?<![\w-])" + re.escape(k) + r"(?![\w-])", binds, re.I) for k in keys):
             out.append(cells)
+    recs = [x for x in decision_records() if not x["superseded"]]
+    if recs:
+        cited = set()
+        for tid, _ in pairs:
+            pk = L / "tickets" / f"{safe(tid)}.md"
+            if pk.exists():
+                cited |= cited_records(pk.read_text(encoding="utf-8"))
+        for x in recs:
+            binds = x["binds"]
+            whole = " ".join(re.findall(r"[\w*]+", binds.lower()))
+            scoped = binds and (whole in BINDS_EVERYONE or any(
+                re.search(r"(?<![\w-])" + re.escape(k) + r"(?![\w-])", binds, re.I) for k in keys))
+            if scoped or (x["num"].isdigit() and int(x["num"]) in cited):
+                out.append([x["num"], x["title"], binds])
     return out
 
 
@@ -1496,7 +1726,28 @@ def flaky_records():
     return out
 
 
+def check_timeout(conf, gate=False):
+    """Seconds one check command may run: merge_timeout at the merge gate when set, else test_timeout."""
+    return int((gate and conf.get("merge_timeout")) or conf.get("test_timeout", 1200))
+
+
+def check_env(conf):
+    """The environment for check runs: this process's, plus config `env` (e.g. an SDK path a build needs)."""
+    extra = conf.get("env") or {}
+    return dict(os.environ, **{k: str(v) for k, v in extra.items()}) if extra else None
+
+
 def run_checks(target, conf, log, label=None, gate=False):
+    """Run the configured checks behind a check slot (see acquire_slot). A land holds its slot for its whole length,
+    so checks run inside a land take none. Raises SlotBusy when no slot came free in time."""
+    held = None if _LANDING["owner"] else acquire_slot(conf, "test", label or p(target))
+    try:
+        return run_checks_now(target, conf, log, label, gate)
+    finally:
+        release_slot(held)
+
+
+def run_checks_now(target, conf, log, label=None, gate=False):
     """Run the configured checks in order, stopping at the first failure. A failing test command is rerun once
     (unless retry_flaky is off, or the failing run took longer than flaky_retry_max_seconds), and the event is
     recorded in .coniso/flaky.jsonl.
@@ -1511,17 +1762,20 @@ def run_checks(target, conf, log, label=None, gate=False):
     code = 0
     for key, cmd in cmds:
         t0 = time.monotonic()
-        r = run(cmd, cwd=target, shell=True, timeout=conf.get("test_timeout", 1200))
+        r = run(cmd, cwd=target, shell=True, timeout=check_timeout(conf, gate), env=check_env(conf))
         took = time.monotonic() - t0
         text.append(f"$ {cmd}\n{r.stdout or ''}{r.stderr or ''}\n[exit {r.returncode}]\n")
         code = r.returncode
         cap = conf.get("flaky_retry_max_seconds", 900)
-        if code != 0 and key == "test_cmd" and conf.get("retry_flaky", True) and cap and took > cap:
+        if code == 124 and "TIMEOUT after" in (r.stderr or ""):
+            text.append(f"NO RERUN: the run hit its time limit ({check_timeout(conf, gate)}s: "
+                        f"{'merge_timeout' if gate and conf.get('merge_timeout') else 'test_timeout'} in config)\n")
+        elif code != 0 and key == "test_cmd" and conf.get("retry_flaky", True) and cap and took > cap:
             text.append(f"NO RERUN: the failing run took {int(took)}s, over flaky_retry_max_seconds ({cap}); "
                         "a real failure is not run twice\n")
         elif code != 0 and key == "test_cmd" and conf.get("retry_flaky", True):
             known = any(x.get("cmd") == cmd for x in flaky_records())
-            r2 = run(cmd, cwd=target, shell=True, timeout=conf.get("test_timeout", 1200))
+            r2 = run(cmd, cwd=target, shell=True, timeout=check_timeout(conf, gate), env=check_env(conf))
             text.append(f"$ {cmd}   (rerun: flaky check)\n{r2.stdout or ''}{r2.stderr or ''}\n[exit {r2.returncode}]\n")
             if r2.returncode == 0:
                 rec = {"ts": now_z(), "where": label or p(target), "cmd": cmd, "first_exit": code, "log": p(log)}
@@ -1731,7 +1985,11 @@ def cmd_test(a):
         print(f"TEST {a.id}: PASS (cached: tree {tree[:7]} unchanged since its last run at {hit['ts']}; "
               f"`test {a.id} --fresh` reruns) · log {hit['log']}")
         return
-    code, text = run_checks(target, conf, log, label=a.id)
+    try:
+        code, text = run_checks(target, conf, log, label=a.id)
+    except SlotBusy as e:
+        print(f"TEST {a.id}: BUSY — {e}; run it again")
+        sys.exit(9)
     if code is None:
         print(f"TEST {a.id}: SKIPPED — {text}")
         sys.exit(2)
@@ -1740,9 +1998,9 @@ def cmd_test(a):
         if after and after != tree:
             changed = git(["diff", "--name-only", "--diff-filter=MD", tree, after], target, check=False).stdout.split()
             if changed:
-                print(f"{SIDE_EFFECTS} (warning): {', '.join(changed[:5])}{' …' if len(changed) > 5 else ''} changed "
-                      "while the checks ran. Review the change; at merge it fails the land. Make format and lint "
-                      "check-only, or fix the test that writes files.")
+                print(f"WARN: checks changed tracked files while they ran: {', '.join(changed[:5])}"
+                      f"{' …' if len(changed) > 5 else ''}. Review the change; at merge it fails the land. Make format "
+                      "and lint check-only, or fix the test that writes files.")
             tree = None     # the pass does not cover the tree as it is now: do not reuse it
     if tree and code == 0:
         with Lock():
@@ -1757,12 +2015,16 @@ def cmd_test(a):
 
 
 def cmd_sync(a):
-    """Bring the main branch into a ticket's worktree (conflict resolution or pre-review refresh)."""
+    """Bring the main branch into a ticket's worktree (conflict resolution or pre-review refresh). It merges the
+    branch, which a land moves only after its checks pass, so it never brings in untested commits."""
     conf = cfg()
     c = load_sprint()
     t = ticket(c, a.id)
     if not t.get("wt"):
         die(f"{a.id} has no worktree")
+    if t["state"] == "reviewing" and not a.cont and not getattr(a, "force", False):
+        die(f"{a.id} is in review: a sync now changes the files under its reviewer (one left conflict markers that "
+            f"way). Wait for the verdict, or pass --force if no reviewer is running.", code=8)
     wt = Path(t["wt"])
     main_ref = c.get("branch") or "HEAD"
     if a.cont:
@@ -1804,7 +2066,560 @@ def cmd_sync(a):
     print(f"SYNC {a.id}: up to date with {main_ref} @ {head[:7]}; diff base moved there")
 
 
+# ---------------------------------------------------------------- check slots, quiet runs, leftover processes
+# A check run can need most of a machine (Project Sol: up to 8 GB and every core for 25 to 45 minutes). These keep
+# the runs within a cap, let a land go first, hold the machine still for timing runs, and show what an earlier
+# session left running. All of it is off until config turns it on (check_slots, check_process_pattern, land_hold).
+
+SLOTS = "slots"
+QUIET_FLAG = "QUIET"
+DEFAULT_WATCH = (r"(?i)^(python[\d.]*w?|py|node|cargo|rustc|cl|link|lld-link|clang|msbuild|dotnet|go|java|gradle|"
+                 r"npm|npx|pnpm|yarn|pytest|ninja|cmake|make|gcc|g\+\+)(\.exe)?$")
+DEFAULT_QUIET_IGNORE = (r"(?i)^(idle|system|system idle process|registry|memory compression|secure system|dwm|csrss|"
+                        r"svchost|msmpeng|searchindexer|searchhost|wmiprvse|audiodg|taskmgr)(\.exe)?$")
+
+
+class SlotBusy(Exception):
+    pass
+
+
+def slots_dir():
+    d = L / SLOTS
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def etime_seconds(text):
+    """ps etime/time: [[dd-]hh:]mm:ss[.cc] -> seconds."""
+    days, _, rest = text.strip().rpartition("-")
+    parts = [float(x) for x in rest.split(":")]
+    secs = 0.0
+    for x in parts:
+        secs = secs * 60 + x
+    return secs + (int(days) * 86400 if days.isdigit() else 0)
+
+
+PS_PROCS = ("Get-CimInstance Win32_Process | ForEach-Object { '{0}|{1}|{2}|{3}|{4}' -f $_.ProcessId, $_.ParentProcessId, "
+            "$(if ($_.CreationDate) { $_.CreationDate.ToFileTimeUtc() } else { 0 }), $_.Name, "
+            "(($_.CommandLine -replace '\\s+',' ')) }")
+
+
+def proc_list():
+    """Every process as {pid, ppid, start (epoch s), name, cmd}; [] when the list cannot be read."""
+    out = []
+    if os.name == "nt":
+        r = run(["powershell", "-NoProfile", "-NonInteractive", "-Command", PS_PROCS], timeout=120)
+        for line in (r.stdout or "").splitlines():
+            parts = line.split("|", 4)
+            if len(parts) == 5 and parts[0].strip().isdigit():
+                try:
+                    ft = int(parts[2])
+                    start = (ft - 116444736000000000) / 1e7 if ft else 0.0
+                except ValueError:
+                    start = 0.0
+                out.append({"pid": int(parts[0]), "ppid": int(parts[1]) if parts[1].strip().isdigit() else -1,
+                            "start": start, "name": parts[3].strip(), "cmd": parts[4].strip()})
+        return out
+    r = run(["ps", "-A", "-o", "pid=,ppid=,etime=,args="], timeout=60)
+    now = time.time()
+    for line in (r.stdout or "").splitlines():
+        parts = line.split(None, 3)
+        if len(parts) >= 3 and parts[0].isdigit():
+            cmd = parts[3] if len(parts) > 3 else ""
+            try:
+                start = now - etime_seconds(parts[2])
+            except ValueError:
+                start = 0.0
+            out.append({"pid": int(parts[0]), "ppid": int(parts[1]) if parts[1].isdigit() else -1, "start": start,
+                        "name": os.path.basename(cmd.split()[0]) if cmd.split() else "", "cmd": cmd})
+    return out
+
+
+def family(procs, pid):
+    """This process's ancestors and descendants (and itself), by pid."""
+    parent = {pr["pid"]: pr["ppid"] for pr in procs}
+    mine, x = set(), pid
+    while x not in mine:
+        mine.add(x)
+        if x not in parent:
+            break
+        x = parent[x]
+    children = {}
+    for pr in procs:
+        children.setdefault(pr["ppid"], []).append(pr["pid"])
+    stack = [pid]
+    while stack:
+        for ch in children.get(stack.pop(), []):
+            if ch not in mine:
+                mine.add(ch)
+                stack.append(ch)
+    return mine
+
+
+def check_runs(conf, procs):
+    """Processes whose command line matches config check_process_pattern: check runs started by hand or by another
+    tool, which no Coniso claim covers. One per run: a match started by another match belongs to it."""
+    pat = conf.get("check_process_pattern")
+    if not pat:
+        return []
+    rx = re.compile(pat, re.I)
+    found = [pr for pr in procs if pr["pid"] != os.getpid() and rx.search(pr["cmd"] or "")]
+    ids = {pr["pid"] for pr in found}
+    return [pr for pr in found if pr["ppid"] not in ids]
+
+
+def quiet_owner():
+    """The quiet run holding the machine ({pid, ts, cmd}), or None. A flag whose process died is removed."""
+    f = L / SLOTS / QUIET_FLAG
+    if not f.exists():
+        return None
+    try:
+        q = json.loads(f.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        q = {}
+    if pid_alive(q.get("pid")):
+        return q
+    try:
+        f.unlink()
+    except OSError:
+        pass
+    return None
+
+
+def slot_state(conf, me=None):
+    """What holds the check slots now. Claims of processes that died are removed. A Coniso run whose check process
+    shows up in check_process_pattern is counted once, as that process."""
+    procs = proc_list() if conf.get("check_process_pattern") else []
+    runs = check_runs(conf, procs)
+    ttl = float(conf.get("check_claim_seconds", 150))
+    now = time.time()
+    starts = sorted(r["start"] for r in runs)
+    claims = []
+    for fp in sorted(slots_dir().glob("claim-*.json")):
+        try:
+            c = json.loads(fp.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        c["file"] = fp
+        if c.get("kind") == "hand":       # `slot`: lives until its check run shows up, or for check_claim_seconds
+            hit = next((x for x in starts if x >= c.get("ts", 0) - 2.0), None)
+            dead = now - c.get("ts", 0) > ttl or hit is not None
+            if hit is not None:
+                starts.remove(hit)
+        else:
+            dead = not pid_alive(c.get("pid"))
+        if dead:
+            try:
+                fp.unlink()
+            except OSError:
+                pass
+        elif fp != me:
+            claims.append(c)
+    parent = {pr["pid"]: pr["ppid"] for pr in procs}
+
+    def under(pid, root):
+        seen = set()
+        while pid not in seen:
+            if pid == root:
+                return True
+            seen.add(pid)
+            if pid not in parent:
+                return False
+            pid = parent[pid]
+        return False
+
+    running = [c for c in claims if c.get("state") == "running"]
+    covered = {c["pid"] for c in running if any(under(r["pid"], c["pid"]) for r in runs)}
+    hand = [c for c in claims if c.get("kind") == "hand"]
+    in_use = len(runs) + len([c for c in running if c["pid"] not in covered]) + len(hand)
+    return {"in_use": in_use, "runs": runs, "claims": claims, "quiet": quiet_owner(),
+            "land_waiting": any(c.get("kind") == "land" and c.get("state") == "waiting" for c in claims),
+            "land_running": any(c.get("kind") == "land" and c.get("state") == "running" for c in claims)}
+
+
+def slot_refusal(conf, kind, st):
+    """Why a check run of this kind may not start now, or None."""
+    limit = int(conf.get("check_slots") or 0)
+    if st["quiet"]:
+        return f"a quiet run holds the machine (pid {st['quiet'].get('pid')}: {str(st['quiet'].get('cmd'))[:60]})"
+    if limit <= 0:
+        return None
+    if kind == "land":
+        most = max(0, min(int(conf.get("land_max_others", 1)), limit - 1))
+        if st["in_use"] > most:
+            return f"{st['in_use']} check run(s) active; a land starts when {most} or fewer are"
+        return None
+    if st["land_waiting"]:
+        return "a land is waiting for a slot and goes first"
+    if st["land_running"] and conf.get("land_hold"):
+        return "a land is running and holds new check runs (land_hold)"
+    if st["in_use"] >= limit:
+        return f"{st['in_use']} of {limit} check slot(s) in use"
+    return None
+
+
+def acquire_slot(conf, kind, label):
+    """Wait for a check slot and claim it; returns the claim file (release it with release_slot), or None when slots
+    are off. kind "land" goes ahead of waiting tests and starts once at most land_max_others runs are active; with
+    land_hold, no new test starts while a land runs. Claims are written under a lock, so waiting callers cannot all
+    see a free slot at once and start together. Raises SlotBusy after check_slot_wait_seconds (a land:
+    land_slot_wait_seconds)."""
+    if int(conf.get("check_slots") or 0) <= 0 and not (L / SLOTS / QUIET_FLAG).exists():
+        return None
+    d = slots_dir()
+    me = d / f"claim-{kind}-{os.getpid()}-{int(time.time() * 1000)}.json"
+    write_json(me, {"pid": os.getpid(), "kind": kind, "state": "waiting", "ts": time.time(), "label": label})
+    wait = float(conf.get("land_slot_wait_seconds", 7200) if kind == "land" else conf.get("check_slot_wait_seconds", 540))
+    poll = float(conf.get("check_slot_poll_seconds", 20))
+    deadline, said, why = time.time() + wait, 0.0, None
+    try:
+        while True:
+            with Lock(d / ".lock"):
+                why = slot_refusal(conf, kind, slot_state(conf, me))
+                if why is None:
+                    data = json.loads(me.read_text(encoding="utf-8"))
+                    data.update(state="running", ts_run=time.time())
+                    write_json(me, data)
+                    return me
+            if time.time() >= deadline:
+                raise SlotBusy(f"{why}; waited {int(wait)}s")
+            if time.time() - said > 300:
+                print(f"waiting for a check slot: {why}", flush=True)
+                said = time.time()
+            time.sleep(poll)
+    except BaseException:
+        try:
+            me.unlink()
+        except OSError:
+            pass
+        raise
+
+
+def release_slot(claim):
+    if claim:
+        try:
+            claim.unlink()
+        except OSError:
+            pass
+
+
+def cmd_slot(a):
+    """For a check run started by hand: wait for a slot and hold it for check_claim_seconds, until the run shows up."""
+    conf = cfg()
+    if a.now:
+        with Lock(slots_dir() / ".lock"):
+            st = slot_state(conf)
+        why = slot_refusal(conf, "test", st)
+        if why:
+            print(f"{'QUIET' if st['quiet'] else 'BUSY'} {why} (report only: no slot taken)")
+            sys.exit(9)
+        print(f"GO {st['in_use']} check run(s) active (report only: no slot taken)")
+        return
+    if int(conf.get("check_slots") or 0) <= 0 and not quiet_owner():
+        print("GO check slots are off (check_slots 0 in config)")
+        return
+    try:
+        claim = acquire_slot(conf, "test", "hand")
+    except SlotBusy as e:
+        print(f"BUSY {e}; run it again")
+        sys.exit(9)
+    data = json.loads(claim.read_text(encoding="utf-8"))
+    data.update(kind="hand", ts=time.time())
+    write_json(claim, data)
+    print(f"GO the slot is yours for {int(conf.get('check_claim_seconds', 150))}s: start your check run now")
+
+
+def cpu_sample(seconds):
+    """{pid: (name, CPU seconds used during the sample)} for every process that used any."""
+    if os.name == "nt":
+        script = ("$a=@{}; Get-Process | ForEach-Object { $a[$_.Id]=$_.CPU }; Start-Sleep -Milliseconds %d; "
+                  "Get-Process | ForEach-Object { if ($_.CPU -ne $null -and $a[$_.Id] -ne $null) "
+                  "{ '{0}|{1}|{2}' -f $_.Id, $_.Name, ($_.CPU - $a[$_.Id]) } }") % int(seconds * 1000)
+        r = run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script], timeout=120)
+        out = {}
+        for line in (r.stdout or "").splitlines():
+            parts = line.split("|")
+            if len(parts) == 3 and parts[0].strip().isdigit():
+                try:
+                    used = float(parts[2].replace(",", "."))
+                except ValueError:
+                    continue
+                if used > 0:
+                    out[int(parts[0])] = (parts[1].strip(), used)
+        return out
+
+    def snap():
+        res, proc = {}, Path("/proc")
+        if proc.is_dir():
+            tick = os.sysconf("SC_CLK_TCK")
+            for d in proc.iterdir():
+                if d.name.isdigit():
+                    try:
+                        st = (d / "stat").read_text()
+                        fields = st[st.rindex(")") + 2:].split()
+                        res[int(d.name)] = (st[st.index("(") + 1:st.rindex(")")], (int(fields[11]) + int(fields[12])) / tick)
+                    except (OSError, ValueError, IndexError):
+                        pass
+            return res
+        r = run(["ps", "-A", "-o", "pid=,time=,comm="], timeout=60)
+        for line in (r.stdout or "").splitlines():
+            parts = line.split(None, 2)
+            if len(parts) == 3 and parts[0].isdigit():
+                try:
+                    res[int(parts[0])] = (os.path.basename(parts[2]), etime_seconds(parts[1]))
+                except ValueError:
+                    pass
+        return res
+
+    a1 = snap()
+    time.sleep(seconds)
+    a2 = snap()
+    return {pid: (n, t - a1[pid][1]) for pid, (n, t) in a2.items() if pid in a1 and t - a1[pid][1] > 0}
+
+
+def busy_processes(conf):
+    """Processes outside this one's family that used more than quiet_busy_cpu CPU seconds in one sample of
+    quiet_sample_seconds: any program, a stray `python -` or the user's own apps included, not only builds."""
+    procs = proc_list()
+    mine = family(procs, os.getpid())
+    secs = float(conf.get("quiet_sample_seconds", 3))
+    sample = cpu_sample(secs)
+    ign = re.compile(conf.get("quiet_ignore") or DEFAULT_QUIET_IGNORE)
+    thr = float(conf.get("quiet_busy_cpu", 0.3))
+    cmd = {pr["pid"]: pr["cmd"] for pr in procs}
+    busy = []
+    for pid, (name, used) in sorted(sample.items(), key=lambda x: -x[1][1]):
+        if pid in mine or pid == 0 or used < thr or ign.search(name or ""):
+            continue
+        busy.append(f"pid {pid} {name}: {used:.2f}s CPU in {secs:g}s · {(cmd.get(pid) or '')[-100:]}")
+    return busy
+
+
+def cmd_quiet(a):
+    """A timing run on a quiet machine: hold new check runs, wait for running ones to end and for the machine to go
+    quiet, then run the command N times, keeping the busy-process list before and after each run. A run disturbed by
+    another busy process is not counted."""
+    conf = cfg()
+    command = [x for x in (a.command or []) if x != "--"]
+    if not command:
+        die("quiet needs a command after --, e.g. quiet --runs 5 -- python bench.py")
+    owner = quiet_owner()
+    if owner:
+        die(f"a quiet run is already going (pid {owner.get('pid')})", code=8)
+    out = Path(a.out) if a.out else L / "reports" / f"quiet-{dt.datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    out = out if out.is_absolute() else ROOT / out
+    out.mkdir(parents=True, exist_ok=True)
+    cwd = Path(a.cwd) if a.cwd else ROOT
+    poll = float(conf.get("check_slot_poll_seconds", 20))
+    log = (out / "summary.txt").open("a", encoding="utf-8")
+
+    def say(text):
+        line = f"[{dt.datetime.now().strftime('%H:%M:%S')}] {text}"
+        print(line, flush=True)
+        log.write(line + "\n")
+        log.flush()
+
+    flag = slots_dir() / QUIET_FLAG
+    write_json(flag, {"pid": os.getpid(), "ts": now_z(), "cmd": " ".join(command)})
+    code = 9
+    try:
+        say(f"QUIET held: no new check run starts. Command: {' '.join(command)} in {p(cwd)}")
+        deadline, said = time.time() + float(conf.get("quiet_wait_seconds", 4500)), 0.0
+        while True:
+            with Lock(slots_dir() / ".lock"):
+                st = slot_state(conf)
+            if st["in_use"] == 0:
+                break
+            if time.time() > deadline:
+                say(f"GAVE UP waiting for {st['in_use']} check run(s) to end")
+                return sys.exit(9)
+            if time.time() - said > 300:
+                say(f"waiting for {st['in_use']} check run(s) to end")
+                said = time.time()
+            time.sleep(poll)
+        deadline = time.time() + float(conf.get("quiet_settle_seconds", 2400))
+        while True:
+            busy = busy_processes(conf)
+            if not busy:
+                break
+            if time.time() > deadline:
+                say(f"GAVE UP waiting for a quiet machine; still busy: " + "; ".join(busy[:5]))
+                return sys.exit(9)
+            say(f"waiting, {len(busy)} busy process(es): {busy[0]}")
+            time.sleep(max(poll, 1.0))
+        say("machine quiet: no busy process outside this run")
+        counted = passed = attempt = 0
+        while counted < a.runs and attempt < a.runs + 3:
+            attempt += 1
+            before = busy_processes(conf)
+            t0 = time.monotonic()
+            r = run(command, cwd=cwd, timeout=int(conf.get("quiet_run_timeout", 1800)))
+            took = time.monotonic() - t0
+            after = busy_processes(conf)
+            (out / f"run-{attempt}.txt").write_text((r.stdout or "") + "\n--- stderr ---\n" + (r.stderr or ""), encoding="utf-8")
+            (out / f"run-{attempt}.processes.txt").write_text(
+                "busy before:\n" + ("\n".join(before) or "(none)") + "\n\nbusy after:\n" + ("\n".join(after) or "(none)") + "\n",
+                encoding="utf-8")
+            disturbed = before + after
+            say(f"run {attempt}: exit {r.returncode} in {took:.1f}s"
+                + (f" · DISTURBED by {len(disturbed)} busy process(es), not counted: {disturbed[0][:90]}" if disturbed
+                   else " · quiet before and after"))
+            if not disturbed:
+                counted += 1
+                passed += 1 if r.returncode == 0 else 0
+        say(f"QUIET RUNS {passed} of {counted} counted run(s) exited 0 · {attempt - counted} disturbed · results {p(out)}")
+        code = 0 if counted == a.runs and passed == counted else 1
+    finally:
+        try:
+            flag.unlink()
+        except OSError:
+            pass
+        log.close()
+    sys.exit(code)
+
+
+def stray_processes(conf):
+    """Build, test and tool processes whose parent is gone: usually left by an agent of an earlier session (a check run
+    whose agent stopped, a `python -` waiting on input). Names come from config watch_processes ("" turns it off);
+    anything matching check_process_pattern counts too. Lists only; never stops anything."""
+    pat = conf.get("watch_processes", DEFAULT_WATCH)
+    if not pat:
+        return []
+    procs = proc_list()
+    pids = {pr["pid"] for pr in procs}
+    mine = family(procs, os.getpid())
+    names = re.compile(pat)
+    min_age = float(conf.get("stray_min_age_seconds", 60))
+    runs = re.compile(conf["check_process_pattern"], re.I) if conf.get("check_process_pattern") else None
+    now, out = time.time(), []
+    for pr in procs:
+        if pr["pid"] in mine or pr["ppid"] in pids or (pr["start"] and now - pr["start"] < min_age):
+            continue
+        if (pr["name"] or "").lower() == "msbuild.exe" and "nodereuse:true" in (pr["cmd"] or "").lower():
+            continue      # an idle MSBuild helper node: left running by design
+        if names.search(pr["name"] or "") or (runs and runs.search(pr["cmd"] or "")):
+            age = f"{int((now - pr['start']) // 60)} min" if pr["start"] else "age unknown"
+            out.append(f"pid {pr['pid']} {pr['name']} ({age}, parent gone): {(pr['cmd'] or '')[-90:]}")
+    return out
+
+
+LANDING = "landing.json"
+_LANDING = {"owner": False}
+
+
+def pid_alive(pid):
+    """Whether a process with this id is running. Never signals it (os.kill(pid, 0) would kill it on Windows)."""
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+        k = ctypes.windll.kernel32
+        h = k.OpenProcess(0x1000, False, pid)          # PROCESS_QUERY_LIMITED_INFORMATION
+        if not h:
+            return k.GetLastError() == 5               # access denied: it exists
+        code = ctypes.c_ulong()
+        ok = k.GetExitCodeProcess(h, ctypes.byref(code))
+        k.CloseHandle(h)
+        return bool(ok) and code.value == 259          # STILL_ACTIVE
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+
+
+def land_marker():
+    return read_json(L / LANDING, None)
+
+
+def recover_land(m, force=False):
+    """Put the main checkout back after a land whose process died: on the branch, which a land moves only after its
+    checks pass, so the branch itself needs nothing. Tickets the dead land recorded as merged whose commit never
+    reached the branch go back to passed."""
+    branch = m.get("branch") or "HEAD"
+    dirty = main_dirty(ignore=[LANDING])
+    if dirty and not force:
+        die(f"an interrupted land (pid {m.get('pid')}, {', '.join(m.get('ids', []))}) left the main checkout with "
+            f"changes ({dirty[0][3:]} …). If none of them are yours, run `land --recover`: it discards them and puts "
+            f"the checkout back on {branch}.", code=8)
+    if dirty or current_branch() != branch:
+        git(["checkout", "-q", "-f", branch], ROOT, check=False)
+        git(["reset", "--hard", "-q", branch], ROOT, check=False)
+    back = []
+    with Lock():
+        c = load_sprint(required=False)
+        if c:
+            for tid in m.get("ids", []):
+                t = c["tickets"].get(tid)
+                if t and t["state"] == "merged" and t.get("merged_sha") and git(
+                        ["merge-base", "--is-ancestor", t["merged_sha"], branch], ROOT, check=False).returncode != 0:
+                    t["state"], t["merged_sha"] = "passed", None
+                    note(t, "passed", "interrupted land recovered: its commit never reached the branch")
+                    back.append(tid)
+            save_sprint(c)
+    try:
+        (L / LANDING).unlink()
+    except FileNotFoundError:
+        pass
+    print(f"RECOVERED an interrupted land (pid {m.get('pid')}): {branch} was not moved by it"
+          + (f"; back to passed: {', '.join(back)}" if back else ""))
+
+
+class landing:
+    """Held for the length of a land or a merge: one at a time, and a land whose process died is recovered first.
+    Nested use (land calling merge) is a no-op."""
+
+    def __init__(self, ids, conf):
+        self.ids, self.conf, self.nested, self.slot = ids, conf, False, None
+
+    def __enter__(self):
+        if _LANDING["owner"]:
+            self.nested = True
+            return self
+        m = land_marker()
+        if m:
+            if pid_alive(m.get("pid")) and m.get("pid") != os.getpid():
+                die(f"a land is running (pid {m['pid']}: {', '.join(m.get('ids', []))}, since {m.get('ts')}); "
+                    "land after it ends", code=8)
+            recover_land(m)
+        c = load_sprint(required=False) or {}
+        write_json(L / LANDING, {"pid": os.getpid(), "ids": self.ids, "branch": c.get("branch") or current_branch(),
+                                 "start": git(["rev-parse", "HEAD"], ROOT, check=False).stdout.strip(), "ts": now_z()})
+        _LANDING["owner"] = True
+        try:
+            self.slot = acquire_slot(self.conf, "land", " ".join(self.ids)) if self.conf.get("worktrees", True) else None
+        except SlotBusy as e:
+            self.__exit__(None, None, None)
+            print(f"BUSY land {' '.join(self.ids)}: {e}; nothing was touched, land again")
+            sys.exit(9)
+        return self
+
+    def __exit__(self, *exc):
+        if self.nested:
+            return False
+        _LANDING["owner"] = False
+        try:
+            (L / LANDING).unlink()
+        except FileNotFoundError:
+            pass
+        release_slot(self.slot)
+        return False
+
+
 def cmd_merge(a):
+    with landing([a.id], cfg()):
+        merge_one(a)
+
+
+def merge_one(a):
     conf = cfg()
     c = load_sprint()
     t = ticket(c, a.id)
@@ -1830,7 +2645,7 @@ def cmd_merge(a):
     dirty = main_dirty()
     if dirty:
         die(f"main checkout has uncommitted changes ({dirty[0][3:]} …); commit or stash them, Coniso will not touch them")
-    if c.get("branch") and current_branch() != c["branch"]:
+    if c.get("branch") and current_branch() != c["branch"] and not getattr(a, "detached_ok", False):
         die(f"main checkout is on {current_branch()} but the sprint merges into {c['branch']}")
     snapshot(t, conf)
     ahead = git(["rev-list", "--count", f"{t['base']}..{t['branch']}"], ROOT, check=False).stdout.strip()
@@ -2553,7 +3368,7 @@ def cmd_retro(a):
     st = ledger_stats(rows)
     if st:
         lines += ["Auditor ledger (overrules worth a look):", st]
-    fb = ROOT / "docs" / "agent-feedback"
+    fb = feedback_dir()
     long_fb = []
     if fb.is_dir():
         for f in sorted(fb.glob("*.md")):
@@ -2654,7 +3469,7 @@ def specialty_file(spec):
 def feedback_file(spec):
     """docs/agent-feedback/<spec>.md, or the legacy name the specialty header gives ("older projects: x.md")
     when only that one exists. Always a path in the main checkout, never a worktree copy."""
-    fb_dir = ROOT / "docs" / "agent-feedback"
+    fb_dir = feedback_dir()
     canon = fb_dir / f"{spec}.md"
     if canon.exists():
         return canon
@@ -2801,7 +3616,7 @@ def cmd_dispatch(a):
             else:
                 workdir = p(ROOT)
             unit, spec = f"{tid}.E1", specs.get(tid, "builder")
-            read = " · ".join([p(L / "BRIEF.md"), packet] + specialty_files(spec))
+            read = " · ".join([p(L / "BRIEF.md"), packet] + house_files() + specialty_files(spec))
             path, how = write_assignment(unit, f"ASSIGNMENT {unit} · engineer/{spec} · model {f_['model']} · from {a.from_}", with_decisions([
                 ("READ FIRST", read), ("WORKDIR", p(workdir)),
                 ("OBJECTIVE", f"Build ticket {tid} ({t['title']}) so every acceptance item is met, with evidence."),
@@ -2815,7 +3630,7 @@ def cmd_dispatch(a):
             unit = tid
             review = "review lead serves" if a.review == "lead" else "dispatch your own reviewer"
             path, how = write_assignment(unit, f"ASSIGNMENT {unit} · lead · model {f_['lead']} · from {a.from_}", with_decisions([
-                ("READ FIRST", f"{p(L / 'BRIEF.md')} · {packet}"), ("WORKDIR", p(ROOT)),
+                ("READ FIRST", " · ".join([p(L / "BRIEF.md"), packet] + house_files())), ("WORKDIR", p(ROOT)),
                 ("OBJECTIVE", f"Deliver ticket {tid} ({t['title']}) built, tested and handed off with evidence for every acceptance item."),
                 ("OWNS", f"ticket {tid}"), ("INPUTS", inputs), ("BOUNDARIES", bounds),
                 ("DONE WHEN", f"{accept_range(n)} evidenced; `{cmd} validate-handoff {tid}` prints HANDOFF OK; state built."),
@@ -2904,7 +3719,7 @@ def cmd_review(a):
             r = redirect_out()
             try:
                 with r:
-                    cmd_sync(argparse.Namespace(id=tid, cont=False))
+                    cmd_sync(argparse.Namespace(id=tid, cont=False, force=True))
             except SystemExit as e:
                 print(r.text.strip())
                 print(f"Review not dispatched: send {tid}'s builder the conflict (resolve, sync {tid} --continue, test, set built), then review again.")
@@ -2940,6 +3755,8 @@ def cmd_review(a):
             reviewers = review_plan(dict(t, review=True))["reviewers"]
         else:
             reviewers = t["review_plan"]["reviewers"]
+        if a.model and not delta:     # an explicit --model sets every reviewer of this review, not only delta ones
+            reviewers = [dict(rv, model=a.model) for rv in reviewers]
         n0 = next_reviewer_n(first)
         panel = len(reviewers) > 1
         units = []
@@ -2959,7 +3776,7 @@ def cmd_review(a):
             lessons = sorted({f for x in group if c["tickets"][x].get("spec")
                               for f in specialty_files(c["tickets"][x]["spec"])[1:]})
             path, _ = write_assignment(unit, f"ASSIGNMENT {unit} · {agent} · model {rv['model']} · from {a.from_}", with_decisions([
-                ("READ FIRST", " · ".join([p(L / "BRIEF.md"), packets] + lessons)), ("WORKDIR", p(t.get("wt") or ROOT)),
+                ("READ FIRST", " · ".join([p(L / "BRIEF.md"), packets] + house_files() + lessons)), ("WORKDIR", p(t.get("wt") or ROOT)),
                 ("OBJECTIVE", f"Verify {', '.join(group)} against the acceptance items and the brief through lens {rv['lens']}, and return an evidence-backed verdict."),
                 ("OWNS", f"{p(rep)}, {p(L / 'reports' / unit)}/**, {p(fix)}"), ("LENS", rv["lens"]),
                 ("SCOPE", "delta" if delta else "full"),
@@ -2980,6 +3797,7 @@ def cmd_review(a):
         for x, units in plans.items():
             t = c["tickets"][x]
             t["review_round"] = {"units": units, "verdicts": {}}
+            t.pop("with_fixes", None)
             t["state"] = "reviewing"
             note(t, "reviewing", f"reviewers {', '.join(units)}")
         save_sprint(c)
@@ -3019,6 +3837,11 @@ def parse_verdicts(text):
         if cur is None:
             continue
         s = ln.strip()
+        hm = re.match(r"^#{1,6}\s+(.+?)\s*#*$", s)
+        if hm:     # a markdown heading: "## FINDINGS" opens the findings, any other heading closes them
+            in_findings = hm.group(1).strip("*: ").upper().startswith("FINDINGS")
+            cur["saw_findings"] = cur.get("saw_findings") or in_findings
+            continue
         head, _, rest = s.partition(":")
         head = head.strip("-* ").upper()
         if head in ("TESTS", "FIX LIST", "REPORT"):
@@ -3029,6 +3852,7 @@ def parse_verdicts(text):
             continue
         if head == "FINDINGS":
             in_findings, s = True, rest
+            cur["saw_findings"] = True
         am = None if in_findings else ACCEPT_RE.match(ln)
         if am:
             items = expand_items(am.group(1))
@@ -3039,6 +3863,15 @@ def parse_verdicts(text):
         elif in_findings and "suspicion" not in s.lower():
             for sev in SEV_RE.findall(s):
                 cur[sev.lower()] += 1
+        elif not in_findings and "suspicion" not in s.lower():
+            cur.setdefault("loose", []).append(s)
+    for b in blocks.values():
+        # No findings section the parser knows: count the tags wherever they are, rather than report none.
+        if not b.get("saw_findings"):
+            for s in b.get("loose", []):
+                for sev in SEV_RE.findall(s):
+                    b[sev.lower()] += 1
+        b.pop("loose", None)
     return blocks
 
 
@@ -3062,6 +3895,21 @@ def rule_round(vs):
     return mech, None
 
 
+def round_unit(unit, tid, rp, rnd):
+    """The review round's unit a VERDICT line means. Reviewers often write `R1` for `P2-03.R1`; a verdict recorded
+    under a name the round does not know would leave the round "waiting on" the real unit forever."""
+    units = rnd.get("units") or []
+    if unit in units:
+        return unit
+    for cand in (f"{tid}.{unit}", rp.stem):
+        if cand in units:
+            return cand
+    pending = [u for u in units if u not in (rnd.get("verdicts") or {})]
+    if len(pending) == 1 and re.fullmatch(r"(?:[\w-]+\.)?R\d+", unit or ""):
+        return pending[0]
+    return unit
+
+
 def cmd_verdict(a):
     """Record a reviewer's verdict; when the round is complete, apply the mechanical review rules."""
     cfg()
@@ -3082,7 +3930,7 @@ def cmd_verdict(a):
                 unit = a.unit or rp.stem
                 rec = {"stated": "?", "void": "no VERDICT line for this ticket", "blocker": 0, "major": 0, "minor": 0, "unmet": 0}
             else:
-                unit = b["unit"]
+                unit = round_unit(b["unit"], tid, rp, rnd)
                 missing = sorted(set(range(1, accept_count(tid, t) + 1)) - b["met"] - b["unmet"])
                 void = (["no verdict for A" + ",A".join(map(str, missing))] if missing else []) + \
                        (["no evidence for A" + ",A".join(map(str, sorted(b["no_evidence"])))] if b["no_evidence"] else [])
@@ -3112,18 +3960,28 @@ def cmd_verdict(a):
                 out.append(f"NEEDS RULING {tid}: {why} · reports: " + ", ".join(sorted({v['report'] for v in vs.values()})))
                 continue
             minors = sum(v["minor"] for v in vs.values())
+            said_fixes = any(v["stated"] == "pass-with-fixes" for v in vs.values())
+            reports = sorted({v["report"] for v in vs.values()})
+            fixes = ""
+            if ruling == "pass" and (minors or said_fixes):
+                fixes = (f" · WITH FIXES: {minors} minor finding(s) to read before landing: {', '.join(reports)}" if minors
+                         else f" · WITH FIXES: the reviewer said pass-with-fixes but no [minor] tag was counted; "
+                              f"read {', '.join(reports)} before landing")
+                t["with_fixes"] = {"minors": minors, "reports": reports}
+            else:
+                t.pop("with_fixes", None)
             t["state"], t["verdict"] = ("passed" if ruling == "pass" else "failed"), ruling
             text = f"ruled {ruling}: {summary}" + (f"; {minors} minor(s) carried as notes" if ruling == "pass" and minors else "") \
                 + (f"; fix list .coniso/reports/{main_fix.name}" if ruling == "fail" else "")
             note(t, t["state"], text)
             (L / "reports" / f"{safe(tid)}.ruling.md").write_text(f"{tid} {text}\n", encoding="utf-8")
             audit = ruling == "fail" or t.get("model") == "opus" or t.get("review")
-            out.append(f"RULED {ruling} {tid} — {summary}" + (" · verdict audit required (playbook)" if audit else ""))
+            out.append(f"RULED {ruling} {tid} — {summary}" + fixes + (" · verdict audit required (playbook)" if audit else ""))
         save_sprint(c)
     print("\n".join(out))
 
 
-QUICKFIX_STATES = ("failed", "passed")
+QUICKFIX_STATES = ("failed", "passed", "built")     # built: before its first review, which then covers the fix
 
 
 def cmd_quickfix(a):
@@ -3147,7 +4005,8 @@ def cmd_quickfix(a):
         if q:
             die(f"{a.id} already has an open quick fix: finish it with `quickfix {a.id} done --note …` or `quickfix {a.id} abort`")
         if t["state"] not in QUICKFIX_STATES:
-            die(f"{a.id} is {t['state']}; a quick fix takes a failed ticket (review or integration) or a passed one with minors to clear")
+            die(f"{a.id} is {t['state']}; a quick fix takes a built ticket (before review), a failed one (review or "
+                f"integration) or a passed one with minors to clear. A ticket in review: wait for its verdict.")
         r = redirect_out()
         try:
             with r:
@@ -3205,7 +4064,11 @@ def cmd_quickfix(a):
     names = git(["diff", "--name-only", q["base"]] + pathspec_excludes(conf), wt, check=False).stdout.split()
     log = L / "reports" / f"{safe(a.id)}.test.log"
     tree = tree_id(wt, conf) if conf.get("test_cache", True) else None
-    code, text = run_checks(wt, conf, log)
+    try:
+        code, text = run_checks(wt, conf, log, label=f"quickfix {a.id}")
+    except SlotBusy as e:
+        print(f"QUICKFIX BUSY {a.id}: {e}; the fix is still open, run `quickfix {a.id} done` again")
+        sys.exit(9)
     if code not in (None, 0):
         print(f"QUICKFIX TEST FAIL {a.id} (exit {code}) · log {p(log)}")
         print("\n".join(text.strip().splitlines()[-15:]))
@@ -3229,22 +4092,31 @@ def cmd_quickfix(a):
         save_sprint(c)
     print(f"QUICKFIX OK {a.id}: {lines} line(s) in {files} file(s) · checks {'PASS' if code == 0 else 'none configured'} "
           f"· state built · quick fix {n} this sprint")
-    print(f"Next: review {a.id} --delta   (a quick fix never merges unreviewed)")
+    if q.get("from") == "built":
+        print(f"Next: review {a.id}   (its first review covers the quick fix too)")
+    else:
+        print(f"Next: review {a.id} --delta   (a quick fix never merges unreviewed)")
 
 
 def land_batch(order, conf, branch):
     """Squash every passed ticket onto the branch, then run the integration checks once on the combined result
     instead of once per ticket. On any problem (a conflict, no changes, failing checks) the branch goes back to
     where it started and the tickets back to passed, so the caller merges and tests them one at a time and finds
-    the culprit. Returns True when the batch landed."""
+    the culprit.
+
+    The squash commits are made on a detached HEAD in the main checkout, so the build caches stay warm, and the
+    branch is moved to them only after the combined checks pass. Until then the branch (what `review` and `sync`
+    merge into a ticket) still points at tested code. Returns "landed", "fallback", "stop" or "stop7"."""
     start = git(["rev-parse", "HEAD"], ROOT).stdout.strip()
+    branch = branch or current_branch()
+    git(["checkout", "-q", "--detach"], ROOT)
     touched, problem, side = [], None, []
     for tid in order:
         touched.append(tid)
         r = redirect_out()
         try:
             with r:
-                cmd_merge(argparse.Namespace(id=tid, force=False, no_test=True, keep=True, fresh=True))
+                cmd_merge(argparse.Namespace(id=tid, force=False, no_test=True, keep=True, fresh=True, detached_ok=True))
         except SystemExit:
             first = next((x for x in r.text.strip().splitlines() if x.strip()), f"{tid} did not merge")
             problem = first.strip()
@@ -3258,7 +4130,15 @@ def land_batch(order, conf, branch):
         if created:
             print(f"Removed {len(created)} untracked file(s) the checks created; gitignore them")
         side = [x for x in side if not x[1]]
+        moved = False
         if code in (None, 0) and not side:
+            r = git(["update-ref", f"refs/heads/{branch}", "HEAD", start], ROOT, check=False)
+            moved = r.returncode == 0
+            if moved:
+                git(["checkout", "-q", branch], ROOT)
+            else:
+                problem = f"{branch} moved during the land ({(r.stderr or r.stdout).strip()[:120]}); nothing landed"
+        if moved:
             for tid in order:
                 with redirect_out():
                     cmd_wt(argparse.Namespace(action="remove", id=tid, force=True))
@@ -3271,13 +4151,16 @@ def land_batch(order, conf, branch):
             if ready:
                 print(f"Now ready: {', '.join(ready)}")
             return "landed"
-        if side:
+        if problem:
+            pass
+        elif side:
             problem = f"{SIDE_EFFECTS} on the combined result: {side_effect_text(side)} · log {p(log)}"
         elif FLAKY_AT_MERGE in text:
             problem = f"{FLAKY_AT_MERGE} on the combined result · log {p(log)}"
         else:
             problem = f"integration checks failed on the combined result (exit {code}) · log {p(log)}"
     git(["reset", "--hard", "-q", start], ROOT, check=False)
+    git(["checkout", "-q", branch], ROOT, check=False)
     with Lock():
         c = load_sprint()
         for tid in touched:
@@ -3298,14 +4181,35 @@ def cmd_land(a):
     """Merge passed tickets in dependency order, as one batch with one integration run when there are several;
     run roadmap-sync once their wave has nothing in flight."""
     conf = cfg()
-    c = load_sprint()
+    if getattr(a, "recover", False):
+        m = land_marker()
+        if not m:
+            print("no interrupted land to recover")
+            return
+        if pid_alive(m.get("pid")) and m.get("pid") != os.getpid():
+            die(f"the land (pid {m['pid']}) is still running", code=8)
+        recover_land(m, force=True)
+        return
+    if not a.ids:
+        die("land needs ticket ids (or --recover)")
     ids = [x for x in ",".join(a.ids).split(",") if x]
+    with landing(ids, conf):
+        land_tickets(a, conf, ids)
+
+
+def land_tickets(a, conf, ids):
+    c = load_sprint()
     order = sorted(ids, key=lambda x: (ticket(c, x).get("wave") or 0, len(c["tickets"][x]["deps"]), x))
     if a.tokens:
         with Lock():
             c2 = load_sprint()
             note(ticket(c2, order[0]), c2["tickets"][order[0]]["state"], "reviewer tokens", a.tokens, a.role or "reviewer")
             save_sprint(c2)
+    for tid in order:
+        wf = c["tickets"][tid].get("with_fixes")
+        if wf and c["tickets"][tid]["state"] == "passed":
+            print(f"WITH FIXES {tid}: passed with {wf['minors'] or 'untagged'} minor finding(s) carried, from "
+                  f"{', '.join(wf['reports'])}")
     if len(order) > 1 and not a.each and conf.get("worktrees", True):
         res = land_batch(order, conf, c.get("branch"))
         if res == "stop":
@@ -3604,6 +4508,22 @@ def main():
     s.add_argument("--typecheck", help="type check run before build and test (e.g. 'npx tsc --noEmit', 'mypy src'); '' clears it")
     s.add_argument("--format-check", dest="format", help="formatting check, not a fixer (e.g. 'npx prettier --check .'); '' clears it")
     s.add_argument("--setup", help="command run in each new worktree, e.g. 'npm ci' or 'dotnet restore'")
+    s.add_argument("--test-timeout", dest="test_timeout", type=int, help="seconds one check command may run (default 1200)")
+    s.add_argument("--merge-timeout", dest="merge_timeout", type=int,
+                   help="seconds one check command may run at merge and land (default: --test-timeout); 0 clears it")
+    s.add_argument("--check-slots", dest="check_slots", type=int,
+                   help="check runs allowed at once on this machine (0: no limit, the default)")
+    s.add_argument("--check-pattern", dest="check_pattern",
+                   help="regex for check-run command lines, so runs started by hand count too, e.g. 'tools[\\/]check\\.py'")
+    g2 = s.add_mutually_exclusive_group()
+    g2.add_argument("--land-hold", dest="land_hold", action="store_true", default=None,
+                    help="no new check run starts while a land runs")
+    g2.add_argument("--no-land-hold", dest="land_hold", action="store_false")
+    s.add_argument("--env", action="append", metavar="KEY=VALUE",
+                   help="environment for check runs (repeatable); KEY= removes one")
+    s.add_argument("--decisions-dir", dest="decisions_dir", help="a decision-record folder, one decision per file")
+    s.add_argument("--house-rules", dest="house_rules", help="comma list of globs every engineer and reviewer reads")
+    s.add_argument("--lessons-dir", dest="lessons_dir", help="per-specialty lessons folder (default docs/agent-feedback)")
     s.add_argument("--link", help="comma list of untracked dirs to link into worktrees, e.g. node_modules")
     s.add_argument("--copy", help="comma list of untracked files to copy into worktrees, e.g. .env.local")
     s.add_argument("--slots", type=int)
@@ -3685,6 +4605,7 @@ def main():
     s = sp.add_parser("sync")
     s.add_argument("id")
     s.add_argument("--continue", dest="cont", action="store_true")
+    s.add_argument("--force", action="store_true", help="sync a ticket in review (only when no reviewer is running)")
     s.set_defaults(fn=cmd_sync)
 
     s = sp.add_parser("merge")
@@ -3750,7 +4671,8 @@ def main():
     s.set_defaults(fn=cmd_verdict)
 
     s = sp.add_parser("land", help="merge passed tickets (several: one batch, one integration run); roadmap-sync when their wave has nothing in flight")
-    s.add_argument("ids", nargs="+")
+    s.add_argument("ids", nargs="*")
+    s.add_argument("--recover", action="store_true", help="put the main checkout back after a land whose process died")
     s.add_argument("--each", action="store_true", help="merge and test one ticket at a time instead of one batch run")
     s.add_argument("--fresh", action="store_true", help="never reuse a ticket's passing `test` run for the integration checks")
     s.add_argument("--tokens", type=int, help="the reviewer's reported tokens, recorded on the first ticket")
@@ -3763,6 +4685,17 @@ def main():
     s.add_argument("--note", help="done: what you changed and why (the delta reviewer reads it)")
     s.add_argument("--from", dest="from_", default="director")
     s.set_defaults(fn=cmd_quickfix)
+
+    s = sp.add_parser("slot", help="wait for a check slot before a check run started by hand (GO / BUSY / QUIET)")
+    s.add_argument("--now", action="store_true", help="report once and return; take no slot")
+    s.set_defaults(fn=cmd_slot)
+
+    s = sp.add_parser("quiet", help="timing runs on a quiet machine: hold check runs, wait for quiet, run N times")
+    s.add_argument("--runs", type=int, default=3)
+    s.add_argument("--out", help="results folder (default .coniso/reports/quiet-<time>)")
+    s.add_argument("--cwd", help="folder to run the command in (default the repo root)")
+    s.add_argument("command", nargs=argparse.REMAINDER, help="-- then the command")
+    s.set_defaults(fn=cmd_quiet)
 
     s = sp.add_parser("validate-handoff", help="mechanical hand-off checks: evidence per acceptance item, test log, no hidden [VERIFY]/TODO")
     s.add_argument("id")

@@ -88,7 +88,7 @@ Used for a single Lead call on a solo ticket, where spawning a Review Lead would
 You hold the one thing nobody below you has: the picture across tickets. When a fail is a few lines you can already name, fixing it yourself costs less than resuming a builder whose whole context is read again. The script keeps it small, and a reviewer still judges it.
 
 Use it only when all of these hold:
-- The ticket is `failed` (review or integration) or `passed` with minors to clear, and its builder is not running.
+- The ticket is `built` (before its first review), `failed` (review or integration) or `passed` with minors to clear, and its builder is not running. A ticket in review is not: wait for its verdict.
 - The fix list or the integration log names the file and line, and you can state the change in one sentence. Typical cases: a seam between two tickets that only showed at integration, a missed import or wiring line, a rename one caller missed, a wrong constant.
 - It needs no investigation. If one ranged Read of about 40 lines per file does not settle it, it is the builder's.
 - It does not weaken, skip or delete a test, and it is not a design change.
@@ -98,18 +98,22 @@ Steps:
 2. Read the named lines and make the edit inside WORKDIR.
 3. `CONISO quickfix <id> done --note "<what you changed and why>"`: measures the change (limit 20 lines in 2 files), runs the checks once, appends your note to the fix list, and sets `built`.
    - `QUICKFIX TOO BIG` or `QUICKFIX TEST FAIL`: run `CONISO quickfix <id> abort` and send the builder the fix list (§7). One attempt; never iterate.
-4. `CONISO review <id> --delta`, and spawn the line it prints. You built the fix, so you do not judge it: a quick fix never merges unreviewed.
+4. Run the review `done` prints: `CONISO review <id> --delta` after a fail or a pass, plain `CONISO review <id>` for a ticket that was only built (its first review covers the fix). Spawn the line it prints. You built the fix, so you do not judge it: a quick fix never merges unreviewed.
 
 Budget: at most 2 quick fixes per wave. Each one stays in your context for the rest of the session, and `retro` counts them.
 
 ## 6. Merge (only you merge)
 Run `CONISO land <ids> [--tokens <reviewer's tokens>]` on `passed` tickets. It merges them in dependency order and once their wave has nothing in flight runs `roadmap-sync`.
+- **The branch moves only on a pass.** A land builds on a detached HEAD in the main checkout (the build caches stay warm) and moves the sprint branch to its commits only after the checks pass. So `review` and `sync`, which merge the branch into a ticket, never pick up untested commits, and opening a review during a land is safe. One land runs at a time: a second one stops with exit 8.
+- **A land whose process died** (a crash, a killed session) leaves the branch where it was. `preflight` says `INTERRUPTED LAND`; the next land puts the checkout back on the branch first when it is clean, and `CONISO land --recover` does it now (it discards what the dead land left in the checkout).
+- **Read every `WITH FIXES` line before you land.** `land` prints one for each ticket that passed with findings carried; `verdict` says it in its `RULED pass` line. Either run a fix round first or land and note the findings as follow-ups.
 - **Several tickets** land as one batch: each is squashed and committed as `<id>: <title>`, then the build and tests run once on the combined result. If that run fails, the branch is reset to where it was and the tickets merge one at a time, each tested, so the culprit surfaces as an `INTEGRATION FAIL`. `--each` forces one-at-a-time from the start.
 - **One ticket** is squashed, built and tested on the integrated result. When the squash is byte-identical to the tree the reviewer's `CONISO test` already passed on, the run is reused (`checks PASS (cached …)`); `--fresh` forces a rerun.
 
 | Result | Action |
 |---|---|
 | **MERGED** | The tickets it prints under "Now ready" are the next wave. **Direct:** plan and deploy them per §3–4 (`CONISO dispatch …`). **Managed:** SendMessage each owning manager "Wave <n>: run <ids>". |
+| **BUSY** (exit 9) | No check slot came free in time (config `check_slots`): nothing was touched. Land again; a land goes ahead of waiting tests. |
 | **CONFLICT** (exit 3) | Resume or spawn the ticket's lead (or its engineer, for a solo ticket): "Conflict: run `CONISO sync <id>`, resolve, `CONISO sync <id> --continue`, `CONISO test <id>`, set built". The Review Lead then re-reviews the resolution diff only. |
 | **INTEGRATION FAIL** (exit 4) | Treat as a review fail. Send a fix list to the lead (or engineer) with the log path. When the log's tail names a seam between tickets that you can fix in a few lines, it is a quick fix (§5d). |
 | **no changes** (exit 4) | The unit produced nothing. Re-dispatch with a tighter assignment. |
@@ -149,6 +153,18 @@ Run `CONISO land <ids> [--tokens <reviewer's tokens>]` on `passed` tickets. It m
    - blocked tickets and the decision each needs;
    - follow-ups.
 5. Run `CONISO close` when nothing is in flight.
+
+## Shared machine: check slots and quiet runs
+When check runs are heavy (minutes of every core, gigabytes of memory), set a cap once with `init`:
+- `--check-slots N`: at most N check runs at once, across every agent. `test`, `merge` and `land` wait for a slot; after `check_slot_wait_seconds` (540) a test prints `TEST <id>: BUSY` (exit 9) and is run again. Claims are taken under a lock, so waiting agents cannot all start at once.
+- `--check-pattern <regex>`: also count check runs started by hand or by another tool, matched on their command line. Engineers who run a check by hand run `CONISO slot` first and start the run on `GO`.
+- A land goes ahead of waiting tests and starts once `land_max_others` (1) runs are left. `--land-hold` keeps new check runs out until the land ends.
+- `--merge-timeout N`: a land's checks may need a longer limit than a ticket's. At the limit the whole process tree is stopped.
+- `--env KEY=VALUE`: environment the checks need (an SDK path), so nobody exports it by hand.
+
+**Timing runs.** `CONISO quiet --runs N -- <command>` holds new check runs, waits for running ones to end and for the machine to go quiet (no other process busy, builds or not), then runs the command N times and keeps the busy-process list beside each result. A disturbed run is not counted. Use it for any time budget you judge.
+
+**Leftovers.** `preflight` lists build and tool processes whose parent is gone, usually left by an agent of an earlier session (a check run, a `python -` waiting on input). It never stops them: stop the ones nobody in this session started.
 
 ## Long sessions
 All state lives in files.
