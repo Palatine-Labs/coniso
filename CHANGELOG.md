@@ -19,6 +19,7 @@ Dev pre-release. Fixes to 1.3.0-dev.1's pipeline checks and memory, found by pro
 - **`revert` updates the roadmap**: the ticket goes back to `todo` with a `Claude:` note and the roadmap is committed. A ticket you marked `done` keeps its status and gets the note.
 
 ### Fixed
+- **A check that writes files no longer stalls the sprint.** A formatter run with `--write`, a build that regenerates a tracked file, or a test that writes into the repo used to leave main dirty after a passing merge, and every later merge then refused to run. `merge` and `land` now fail with `CHECKS MODIFIED FILES` (exit 7) when a check rewrote a tracked file: they name the files and reset main, and the ticket keeps its state. New untracked files a check leaves behind (a cache folder, build output) cannot change what is committed, so they are removed with a note and the merge goes on. A ticket's own `test` warns about rewritten files and does not cache that pass.
 - Binary key stores (`.p12`, `.pfx`, `.jks`, `.keystore`) were never caught: git prints no `+++` line for a binary file. The scan now reads the binary-file header too.
 
 ## [1.3.0-dev.1] - 2026-11-24

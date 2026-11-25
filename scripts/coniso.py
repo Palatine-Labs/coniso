@@ -174,6 +174,44 @@ def main_dirty(ignore=()):
     return keep
 
 
+def check_side_effects():
+    """(path, untracked) for every file the checks changed in the main checkout after a squash: tracked files that
+    now differ from the index, and new files .gitignore does not cover. Merges start from a clean checkout, so
+    anything here was written by a check (a formatter run with --write, a build that regenerates a tracked file,
+    a test that writes into the repo, a cache folder). Only the tracked ones change what would be committed."""
+    out = []
+    for ln in git(["status", "--porcelain", "--untracked-files=all"], ROOT, check=False).stdout.splitlines():
+        if len(ln) < 4:
+            continue
+        path = ln[3:].strip().strip('"')
+        path = path.split(" -> ")[-1]
+        if ln.startswith("??"):
+            out.append((path, True))
+        elif ln[1] != " ":
+            out.append((path, False))
+    return out
+
+
+def undo_side_effects(files):
+    """Delete the untracked files a check created; `reset --hard` restores the tracked ones."""
+    for path, untracked in files:
+        if untracked:
+            try:
+                (ROOT / path).unlink()
+            except OSError:
+                pass
+
+
+SIDE_EFFECTS = "CHECKS MODIFIED FILES"
+
+
+def side_effect_text(files):
+    names = ", ".join(x for x, _ in files[:5]) + (f" +{len(files) - 5} more" if len(files) > 5 else "")
+    return (f"{names}. A check rewrote tracked files, so what passed is not what would be committed. Make format and "
+            "lint check-only (`prettier --check`, not `--write`), commit generated files in the ticket, or fix a test "
+            "that writes into the repo. Then land again.")
+
+
 def current_branch():
     r = git(["rev-parse", "--abbrev-ref", "HEAD"], ROOT, check=False)
     return r.stdout.strip() if r.returncode == 0 else "?"
@@ -1697,6 +1735,15 @@ def cmd_test(a):
     if code is None:
         print(f"TEST {a.id}: SKIPPED — {text}")
         sys.exit(2)
+    if tree:
+        after = tree_id(target, conf)
+        if after and after != tree:
+            changed = git(["diff", "--name-only", "--diff-filter=MD", tree, after], target, check=False).stdout.split()
+            if changed:
+                print(f"{SIDE_EFFECTS} (warning): {', '.join(changed[:5])}{' …' if len(changed) > 5 else ''} changed "
+                      "while the checks ran. Review the change; at merge it fails the land. Make format and lint "
+                      "check-only, or fix the test that writes files.")
+            tree = None     # the pass does not cover the tree as it is now: do not reuse it
     if tree and code == 0:
         with Lock():
             c = load_sprint()
@@ -1826,6 +1873,25 @@ def cmd_merge(a):
             checks = f"PASS (cached: tree {tree[:7]} already tested at {hit['ts']}, log {hit['log']})"
         else:
             code, text = run_checks(ROOT, conf, log, label=f"merge {a.id}", gate=True)
+            side = check_side_effects()
+            created = [x for x in side if x[1]]
+            side = [x for x in side if not x[1]]
+            undo_side_effects(created)     # new untracked files cannot change what is committed, only dirty main
+            if created:
+                print(f"Removed {len(created)} untracked file(s) the checks created "
+                      f"({', '.join(x for x, _ in created[:3])}{' …' if len(created) > 3 else ''}); gitignore them")
+            if side:
+                git(["reset", "--hard", "-q", "HEAD"], ROOT, check=False)
+                with Lock():
+                    c2 = load_sprint()
+                    note(ticket(c2, a.id), c2["tickets"][a.id]["state"],
+                         f"{SIDE_EFFECTS.lower()}: {', '.join(x for x, _ in side[:5])}")
+                    save_sprint(c2)
+                print(f"{SIDE_EFFECTS} {a.id}: main reset, nothing committed; the ticket keeps its state · log {p(log)}")
+                print(side_effect_text(side))
+                if code not in (None, 0):
+                    print("The checks also failed:\n" + "\n".join(text.strip().splitlines()[-12:]))
+                sys.exit(7)
             if code not in (None, 0) and FLAKY_AT_MERGE in text:
                 git(["reset", "--hard", "-q", "HEAD"], ROOT, check=False)
                 with Lock():
@@ -3172,7 +3238,7 @@ def land_batch(order, conf, branch):
     where it started and the tickets back to passed, so the caller merges and tests them one at a time and finds
     the culprit. Returns True when the batch landed."""
     start = git(["rev-parse", "HEAD"], ROOT).stdout.strip()
-    touched, problem = [], None
+    touched, problem, side = [], None, []
     for tid in order:
         touched.append(tid)
         r = redirect_out()
@@ -3186,7 +3252,13 @@ def land_batch(order, conf, branch):
     if problem is None:
         log = L / "reports" / f"land-{safe(order[0])}+{len(order) - 1}.merge-test.log"
         code, text = run_checks(ROOT, conf, log, label=f"land {'+'.join(order)}", gate=True)
-        if code in (None, 0):
+        side = check_side_effects()
+        created = [x for x in side if x[1]]
+        undo_side_effects(created)
+        if created:
+            print(f"Removed {len(created)} untracked file(s) the checks created; gitignore them")
+        side = [x for x in side if not x[1]]
+        if code in (None, 0) and not side:
             for tid in order:
                 with redirect_out():
                     cmd_wt(argparse.Namespace(action="remove", id=tid, force=True))
@@ -3199,18 +3271,23 @@ def land_batch(order, conf, branch):
             if ready:
                 print(f"Now ready: {', '.join(ready)}")
             return "landed"
-        flaky_stop = FLAKY_AT_MERGE in text
-        problem = (f"{FLAKY_AT_MERGE} on the combined result · log {p(log)}" if flaky_stop
-                   else f"integration checks failed on the combined result (exit {code}) · log {p(log)}")
+        if side:
+            problem = f"{SIDE_EFFECTS} on the combined result: {side_effect_text(side)} · log {p(log)}"
+        elif FLAKY_AT_MERGE in text:
+            problem = f"{FLAKY_AT_MERGE} on the combined result · log {p(log)}"
+        else:
+            problem = f"integration checks failed on the combined result (exit {code}) · log {p(log)}"
     git(["reset", "--hard", "-q", start], ROOT, check=False)
     with Lock():
         c = load_sprint()
         for tid in touched:
             t = c["tickets"][tid]
             t["state"], t["merged_sha"] = "passed", None
-            note(t, "passed", "batch land reset" + ("" if problem.startswith(FLAKY_AT_MERGE) else "; merging one by one"))
+            note(t, "passed", "batch land reset" + ("" if problem.startswith((FLAKY_AT_MERGE, SIDE_EFFECTS)) else "; merging one by one"))
         save_sprint(c)
     print(f"BATCH RESET: {problem} · {branch} back at {start[:7]}")
+    if problem.startswith(SIDE_EFFECTS):       # every ticket would hit it again one at a time: stop for the fix
+        return "stop7"
     if problem.startswith(FLAKY_AT_MERGE):     # one at a time would pass on the now-recorded flake: stop for a look
         print("\n".join(text.strip().splitlines()[-20:]))
         return "stop"
@@ -3233,6 +3310,8 @@ def cmd_land(a):
         res = land_batch(order, conf, c.get("branch"))
         if res == "stop":
             sys.exit(4)
+        if res == "stop7":
+            sys.exit(7)
         if res == "fallback":
             print("Merging one by one to find the culprit.")
     for tid in order:

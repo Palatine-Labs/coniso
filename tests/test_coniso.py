@@ -446,6 +446,51 @@ class Pipeline(Repo):
         self.assertEqual(rt["status"], "done")
         self.assertIn("reverted", rt["notes"])
 
+    def writer(self, rel, body="formatted"):
+        # a "check" that writes to the checkout: a formatter run with --write, or a build emitting into the repo
+        (self.root / "writer.py").write_text(
+            f"import pathlib\np = pathlib.Path({rel!r})\np.write_text((p.read_text() if p.exists() else '') + {body!r} + chr(10))\n",
+            encoding="utf-8")
+        self.git("add", "-A")
+        self.git("commit", "-qm", "writer")
+        return f'"{PY}" writer.py'
+
+    def test_a_check_that_rewrites_a_tracked_file_fails_the_merge_and_leaves_main_clean(self):
+        self.c("init", "--format-check", self.writer("README.md"))
+        self.build("P1-01", fname="a.txt", body="a\n")
+        head = self.git("rev-parse", "HEAD").strip()
+        out = self.c("merge", "P1-01", "--force", code=7)
+        self.assertIn("CHECKS MODIFIED FILES P1-01: main reset", out)
+        self.assertIn("README.md", out)
+        self.assertEqual(self.git("rev-parse", "HEAD").strip(), head)
+        self.assertEqual(self.git("status", "--porcelain").strip(), "")
+        self.assertEqual(self.sprint()["tickets"]["P1-01"]["state"], "built")
+        self.c("init", "--format-check", "")                               # made check-only (here: removed)
+        self.assertIn("MERGED P1-01", self.c("merge", "P1-01", "--force"))
+
+    def test_untracked_files_a_check_creates_are_cleaned_up_and_the_merge_proceeds(self):
+        self.c("init", "--build", self.writer("build-output.txt"))          # a cache or build output, not gitignored
+        self.build("P1-01", fname="a.txt", body="a\n")
+        out = self.c("merge", "P1-01", "--force")
+        self.assertIn("MERGED P1-01", out)
+        self.assertIn("Removed 1 untracked file(s) the checks created (build-output.txt); gitignore them", out)
+        self.assertFalse((self.root / "build-output.txt").exists())
+        self.assertEqual(self.git("status", "--porcelain").strip(), "")
+        self.build("P1-02", fname="b.txt", body="b\n")                       # the next merge is not blocked
+        self.assertIn("MERGED P1-02", self.c("merge", "P1-02", "--force"))
+
+    def test_ticket_test_warns_and_does_not_cache_when_checks_rewrite_the_worktree(self):
+        self.c("init", "--format-check", self.writer("README.md"))
+        self.build("P1-01", fname="a.txt", body="a\n")
+        out = self.c("test", "P1-01")
+        self.assertIn("CHECKS MODIFIED FILES (warning): README.md", out)
+        self.assertNotIn("test_cache", self.sprint()["tickets"]["P1-01"])
+
+    def test_ticket_test_does_not_warn_about_cache_files_the_checks_add(self):
+        self.c("init", "--build", self.writer("build-output.txt"))
+        self.build("P1-01", fname="a.txt", body="a\n")
+        self.assertNotIn("CHECKS MODIFIED FILES", self.c("test", "P1-01"))
+
     def test_real_failure_still_fails_after_rerun(self):
         self.c("init", "--test", f'"{PY}" -c "import sys; sys.exit(2)"')
         self.build("P1-01")
@@ -1202,6 +1247,23 @@ class BatchLand(Repo):
         marker.unlink()
         out = self.c("land", "P1-01", "P1-02")                                # on record now: the retry lands
         self.assertIn("BATCH 2 tickets", out)
+
+    def test_a_batch_whose_checks_write_files_stops_and_leaves_main_clean(self):
+        (self.root / "writer.py").write_text("import pathlib\np = pathlib.Path('README.md')\np.write_text(p.read_text() + 'x' + chr(10))\n",
+                                             encoding="utf-8")
+        self.git("add", "-A")
+        self.git("commit", "-qm", "writer")
+        self.sh(PY, str(SCRIPT), "init", "--format-check", f'"{PY}" writer.py')
+        self.pass_ticket("P1-01", "a.txt")
+        self.pass_ticket("P1-02", "b.txt")
+        head = self.git("rev-parse", "HEAD").strip()
+        out = self.c("land", "P1-01", "P1-02", code=7)
+        self.assertIn("BATCH RESET: CHECKS MODIFIED FILES on the combined result: README.md", out)
+        self.assertNotIn("Merging one by one", out)
+        self.assertEqual(self.git("rev-parse", "HEAD").strip(), head)
+        self.assertEqual(self.git("status", "--porcelain").strip(), "")
+        s = self.sprint()
+        self.assertEqual({s["tickets"][x]["state"] for x in ("P1-01", "P1-02")}, {"passed"})
 
     def test_failing_batch_falls_back_to_one_at_a_time(self):
         (self.root / "check.py").write_text("import os, sys\nsys.exit(1 if os.path.exists('a.txt') and os.path.exists('b.txt') else 0)\n",
