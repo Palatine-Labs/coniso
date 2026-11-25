@@ -64,6 +64,15 @@ claude plugin marketplace add Palatine-Labs/coniso
 claude plugin install coniso@coniso
 ```
 
+**Dev channel.** Pre-releases (versions like `1.3.0-dev.1`) live on the `dev` branch and are tagged as GitHub pre-releases. To try one, add the marketplace pinned to that branch (remove a `main` copy first with `/plugin marketplace remove coniso`):
+
+```
+/plugin marketplace add Palatine-Labs/coniso#dev
+/plugin install coniso@coniso
+```
+
+Pin a single pre-release with its tag instead, e.g. `Palatine-Labs/coniso#v1.3.0-dev.1`. Run `init` again in each project after updating so `.coniso/` picks up the new script and references.
+
 Install it from one source only. A copy added from Anthropic's directory on claude.ai appears in Claude Code as `coniso@synced`; if you also install `coniso@coniso`, disable one of them.
 
 ### Requirements
@@ -190,7 +199,7 @@ Being straight about this:
 
 | Command | Purpose |
 |---|---|
-| `init [--stack <pack>\|none]`, `preflight` | Install or refresh; check git state, roadmap validity, nesting mode and permissions |
+| `init [--lint/--typecheck/--format-check <cmd>] [--stack <pack>\|none]`, `preflight` | Install or refresh; check git state, roadmap validity, nesting mode and permissions |
 | `permissions [--write [--accept-edits] \| --decline \| --remove]` | Show, grant, decline or undo Coniso's entries in `.claude/settings.local.json` |
 | `schedule [--phase P] [--tickets ids] [--limit N] [--add] [--formation managed\|direct]` | Plan a sprint |
 | `validate-plan <table> [--slots N] [--no-files]` | Check a delegation plan: one owner per file per step, complete assignment files, slot limits; `MATCHES SCHEDULE` when it is exactly the scheduled plan (no audit needed); writes `<table>.ctx.md`, the auditor's one-line-per-ticket context |
@@ -200,7 +209,8 @@ Being straight about this:
 | `wt add\|path\|remove <id>` | Worktrees on branch `coniso/<id>`, based on your current HEAD |
 | `diff <id>` / `diff --range A..B`, `test <id\|main> [--fresh]` | Diff and test output go to files; the console gets a summary. `test` reuses a passing run while the worktree's tree is unchanged |
 | `sync <id> [--continue]` | Bring main into a ticket's worktree to resolve conflicts |
-| `merge <id>` | Squash, integration test, commit; resets cleanly on conflict or failure |
+| `merge <id> [--allow-secrets]` | Squash, secret scan, integration checks, commit; resets cleanly on conflict, a secret finding or failure |
+| `revert <id> --reason TEXT [--force]` | Undo a merged ticket with a revert commit and send it back to queued |
 | `dispatch <ids> [--specialty …] [--review lead\|self] [--from U] [--plan name] [--rewrite]` | Worktree, complete assignment file and spawn line per ticket; a validated wave table when several |
 | `review <ids> [--panel [ids]] [--delta] [--model opus] [--plan name] [--tokens N]` | Sync with main, measure the diff, reviewer assignments per review plan with a BUDGET sized to it (patch, batch and delta reviews go to `reviewer-lite`; an oversized patch is promoted), set reviewing, spawn lines |
 | `verdict <id[,id]> --report <file>` | Record a reviewer verdict; prints `RULED pass\|fail` when the rules settle it, `NEEDS RULING: <reason>` when a leader must |
@@ -208,7 +218,10 @@ Being straight about this:
 | `quickfix <id> begin\|done --note …\|abort` | A bounded Director fix in a failed or passed ticket's worktree: sync and snapshot, then a size check (20 lines / 2 files), one check run, state `built` for a delta review; `abort` restores the builder's work |
 | `ledger add\|stats` | Auditor objection log |
 | `brief-trim [--before YYYY-MM-DD]` | Move Decisions log rows older than the current sprint out of the brief, into `.coniso/maps/decisions.md` |
-| `roadmap-sync`, `retro [--lessons]`, `close` | Write back, report (tokens per ticket and role, oversized feedback files; `--lessons` prints only the last Lessons), archive |
+| `memory` | Health of lessons, decisions, retro lessons and maps, with issues to fix; run at setup and at phase gates |
+| `decisions [--grep TERM] [--all]` | Search binding decisions in the brief and its archive; `SUPERSEDED` rows only with `--all` |
+| `lesson <spec> "<text>" [--source ID]`, `lesson <spec> --retire MATCH --by REASON` | Add a stamped lesson to `docs/agent-feedback/<spec>.md`, or retire one into `<spec>.retired.md` with a record |
+| `roadmap-sync`, `retro [--lessons [--sprints N]]`, `close` | Write back, report (tokens per ticket and role, oversized feedback files; `--lessons` prints the Lessons of the last N sprints that recorded any), archive |
 | `roadmap new\|show\|next\|validate\|extract\|write\|set\|log\|upgrade` | Roadmap file tools (work without `.coniso/`) |
 
 ## Stack packs

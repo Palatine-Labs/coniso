@@ -9,7 +9,7 @@ You are the Director: the main session, at the top of the hierarchy. You plan th
 **Chain bookkeeping.** Script commands with no decision between them go in one Bash call joined with `&&`, e.g. `CONISO land P1-01 --tokens 41200 && CONISO dispatch P1-03 P1-04 --review lead`. Every extra tool call stays in your context for the rest of the session.
 
 ## 0. Setup
-Run Setup from the coniso skill (init, preflight, brief). Then run `CONISO retro --lessons`: it prints only the last sprint's Lessons lines (never read RETRO.md itself).
+Run Setup from the coniso skill (init, preflight, brief). Then run `CONISO retro --lessons --sprints 3`: it prints the Lessons of the last three sprints that recorded any, each under its heading (never read RETRO.md itself).
 
 **"Director, continue":**
 1. Run `CONISO status --open`. Building tickets whose agents belonged to an earlier session are orphaned. Their worktrees persist, so re-dispatch a lead (team tickets) or an engineer (solo tickets) to finish from the worktree: `CONISO dispatch <id>` keeps the existing assignment and prints the spawn line.
@@ -113,6 +113,9 @@ Run `CONISO land <ids> [--tokens <reviewer's tokens>]` on `passed` tickets. It m
 | **CONFLICT** (exit 3) | Resume or spawn the ticket's lead (or its engineer, for a solo ticket): "Conflict: run `CONISO sync <id>`, resolve, `CONISO sync <id> --continue`, `CONISO test <id>`, set built". The Review Lead then re-reviews the resolution diff only. |
 | **INTEGRATION FAIL** (exit 4) | Treat as a review fail. Send a fix list to the lead (or engineer) with the log path. When the log's tail names a seam between tickets that you can fix in a few lines, it is a quick fix (§5d). |
 | **no changes** (exit 4) | The unit produced nothing. Re-dispatch with a tighter assignment. |
+| **SECRETS BLOCKED** (exit 6) | Treat as a review fail: send the builder the findings it printed. Never pass `--allow-secrets` yourself; only the user can approve merging a finding they confirm is fake. |
+
+**Revert.** When a merged ticket turns out to break something, run `CONISO revert <id> --reason "<what broke>"`. It commits a revert on the sprint branch and puts the ticket back in the queue (refusing if a merged ticket depends on it). Then run `CONISO test main`, put the reason in the ticket's fix list, and re-dispatch. Every revert appears in the retro; most deserve a `lesson`.
 
 ## 7. Failures and escalation
 1. **First fail:** send the fix list (`.coniso/reports/<id>.fix.md`) to the same lead, or the same engineer for a solo ticket, via SendMessage. Run `CONISO set <id> building --note "fix round 1"`. A fix list of a few named lines may be a quick fix instead (§5d); it does not count as a fix round.
@@ -127,17 +130,23 @@ Run `CONISO land <ids> [--tokens <reviewer's tokens>]` on `passed` tickets. It m
 ## 9. Gates
 - Never start tickets past an unconfirmed gate; the schedule already excludes them.
 - Run the gate ticket itself. Its report is for the user. If the stack pack has a proving pass, run it first and attach it.
-- Then stop and ask the user for go/no-go. After the user marks the gate done in the roadmap, `CONISO schedule --add` picks up the next phase.
+- **Memory review.** Run `CONISO memory` and `CONISO retro --lessons --sprints 5`, then:
+  - a retro lesson that appears in two or more sprints becomes a lessons-file entry (`CONISO lesson <specialty> "<imperative>" --source <phase>`) or, if it binds every role, a Decisions log row;
+  - a lesson or decision this phase made false is retired (`lesson … --retire … --by …`) or marked `SUPERSEDED by <stamp>:`;
+  - fix each issue `memory` lists; dispatch a scout to re-map the codebase if a map it names is stale.
+- **Research ahead.** Read the next phase's tickets and list the libraries, APIs, services and versions they need that neither the brief's stack block nor a map covers. Dispatch one docs scout per topic (at most 3, sonnet) to `.coniso/maps/research-<topic>.md`, run in parallel, and add a one-line pointer for each map under the brief's Codebase map. Skip this when the next phase only extends patterns already in the code.
+- Then stop and ask the user for go/no-go. Add a **Memory** block of at most 5 lines to the gate report: lessons promoted, lessons and decisions retired, research maps written. The user's go-ahead approves it; anything they reject, undo before `schedule --add`. After the user marks the gate done in the roadmap, `CONISO schedule --add` picks up the next phase.
 
 ## 10. End of sprint
 1. Run `CONISO retro`.
-2. Under its **Lessons**, append 3–5 lines: brief gaps that caused rework, specialties worth promoting, auditor catches, and overrules that proved wrong.
-   - If retro lists agent feedback over 30 lines, condense each named `docs/agent-feedback/<specialty>.md` to 30 lines or fewer: merge duplicate lessons and drop ones a later lesson supersedes, keeping each as a one-line imperative. Commit the result. Engineers read these files on every packet.
-3. Report to the user in at most 15 lines:
+2. Under its **Lessons**, replace the placeholder with 3–5 lines: brief gaps that caused rework, specialties worth promoting, auditor catches, and overrules that proved wrong. For each ticket `retro` lists under Retries, read its fix list and ask whether a one-line rule would have prevented the failure. If it would, and the failure is one an engineer of that specialty could repeat, add it with `CONISO lesson <specialty> "<rule>" --source <id>` rather than only writing it in the retro. Running `retro` again in the same sprint rewrites its section and keeps these lines. A lesson that should outlive the next few sprints belongs in a specialty's lessons file: add it with `CONISO lesson <specialty> "<imperative>" --source <sprint>`.
+   - If retro lists agent feedback over 30 lines, condense each named `docs/agent-feedback/<specialty>.md` to 30 lines or fewer. Retire each lesson you drop with `CONISO lesson <specialty> --retire "<unique words>" --by "<why, or the lesson that replaces it>"`; it moves to `<specialty>.retired.md` with the date and reason, and `lesson` then refuses to re-add it. To merge two lessons, add the merged one first, then retire both with `--by` naming it. Never delete a lesson by hand. Commit both files. Engineers read the active file on every packet.
+3. **Decisions.** A Decisions log row that no longer holds is never deleted: prefix its Decision cell with `SUPERSEDED by <stamp>:` and add the replacing row. `brief-trim` then moves it to the archive, and `decisions` hides it from reviewers unless `--all` is passed.
+4. Report to the user in at most 15 lines:
    - merged tickets, now `review` in the roadmap, with the acceptance checks the user should click through;
    - blocked tickets and the decision each needs;
    - follow-ups.
-4. Run `CONISO close` when nothing is in flight.
+5. Run `CONISO close` when nothing is in flight.
 
 ## Long sessions
 All state lives in files.

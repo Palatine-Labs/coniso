@@ -19,7 +19,7 @@ import tempfile
 import time
 from pathlib import Path
 
-VERSION = "1.2.0"
+VERSION = "1.3.0-dev.1"
 STATES = ["queued", "building", "built", "reviewing", "passed", "failed",
           "conflict", "merged", "blocked", "dropped"]
 ACTIVE = {"building", "built", "reviewing", "passed", "failed", "conflict"}
@@ -583,7 +583,7 @@ def cmd_init(a):
         if not rp.exists():
             die(f"roadmap not found: {a.roadmap}")
         conf["roadmap"] = rp.relative_to(ROOT).as_posix()
-    for key in ("test", "build", "setup"):
+    for key in ("test", "build", "setup", "lint", "typecheck", "format"):
         val = getattr(a, key)
         if val is not None:
             conf[f"{key}_cmd"] = val
@@ -838,6 +838,14 @@ def cmd_preflight(a):
         line("WARN", f"brief core is {core} lines / {core_bytes // 1024} KB (limit {BRIEF_CORE_MAX} lines or "
                      f"{BRIEF_CORE_MAX_BYTES // 1024} KB; every agent reads it on every spawn): trim it, move detail to "
                      ".coniso/maps/*.md and point at it; `brief-trim` moves older Decisions log rows to .coniso/maps/decisions.md")
+    stale_maps = stale_map_report()
+    if stale_maps:
+        line("INFO", f"maps written {MAP_STALE_COMMITS}+ commits ago (re-scout or delete before trusting them): "
+                     + ", ".join(stale_maps))
+    _, mem_issues = memory_report()
+    mem_issues = [x for x in mem_issues if "commits old" not in x]     # stale maps are listed above
+    if mem_issues:
+        line("INFO", f"memory: {len(mem_issues)} issue(s): " + "; ".join(mem_issues) + " (`memory` for the full report)")
     c = load_sprint(required=False)
     if c:
         live = [tid for tid, t in c["tickets"].items() if t["state"] in ACTIVE]
@@ -847,6 +855,26 @@ def cmd_preflight(a):
         line("WARN", f"leftover worktrees with no sprint: {', '.join(stale)} (wt remove <id> --force)")
     print("\n".join(out))
     sys.exit(0 if ok else 1)
+
+
+MAP_STALE_COMMITS = 30
+
+
+def stale_map_report():
+    """Scout maps (not the decisions archive) with MAP_STALE_COMMITS or more commits on HEAD since the map was written."""
+    d = L / "maps"
+    if not d.is_dir():
+        return []
+    out = []
+    for f in sorted(d.glob("*.md")):
+        if f.name == Path(DECISIONS_ARCHIVE).name:
+            continue
+        since = dt.datetime.fromtimestamp(f.stat().st_mtime).isoformat(timespec="seconds")
+        r = git(["rev-list", "--count", f"--since={since}", "HEAD"], ROOT, check=False)
+        n = int(r.stdout.strip()) if r.returncode == 0 and r.stdout.strip().isdigit() else 0
+        if n >= MAP_STALE_COMMITS:
+            out.append(f"{f.name} ({n})")
+    return out
 
 
 BRIEF_CORE_MAX = 150
@@ -901,14 +929,15 @@ def cmd_brief_trim(a):
             continue
         if s.startswith("|"):
             m = re.search(r"\d{4}-\d{2}-\d{2}", s.strip("|").split("|")[0])
-            if m and m.group(0) < cutoff:
+            if (m and m.group(0) < cutoff) or is_superseded(ln):
                 moved.append(ln)
                 continue
         keep.append(ln)
     if not moved:
         print(f"brief-trim: no Decisions log rows dated before {cutoff} · core {brief_core_lines()} lines")
         return
-    pointer = f"Older decisions (still binding): .coniso/{DECISIONS_ARCHIVE}. Grep it before changing an area they cover."
+    pointer = (f"Older decisions (still binding): .coniso/{DECISIONS_ARCHIVE}. "
+               f"Run `{cfg().get('cmd', 'CONISO')} decisions --grep <term>` before changing an area they cover.")
     if not any(pointer.split(":")[0] in ln for ln in keep):
         while keep and not keep[-1].strip():
             keep.pop()
@@ -920,7 +949,139 @@ def cmd_brief_trim(a):
     with archive.open("a", encoding="utf-8") as fh:
         fh.write(head + "\n".join(moved) + "\n")
     brief.write_text("\n".join(lines[:start + 1] + keep + lines[end:]) + "\n", encoding="utf-8")
-    print(f"brief-trim: moved {len(moved)} row(s) dated before {cutoff} to .coniso/{DECISIONS_ARCHIVE} · core now {brief_core_lines()} lines")
+    print(f"brief-trim: moved {len(moved)} row(s) dated before {cutoff} or superseded to .coniso/{DECISIONS_ARCHIVE} "
+          f"· core now {brief_core_lines()} lines")
+
+
+def is_superseded(row):
+    """A Decisions log row retired by prefixing its Decision cell with SUPERSEDED (rows are never deleted)."""
+    cells = row.strip().strip("|").split("|")
+    return len(cells) > 1 and cells[1].strip().upper().startswith("SUPERSEDED")
+
+
+def decision_rows():
+    """(source, row) for every data row of the brief's Decisions log and of the archive, in file order."""
+    out = []
+    brief = L / "BRIEF.md"
+    if brief.exists():
+        lines = brief.read_text(encoding="utf-8").splitlines()
+        start = next((i for i, ln in enumerate(lines) if ln.startswith("## Decisions log")), None)
+        if start is not None:
+            end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith("## ")), len(lines))
+            out += [("brief", ln) for ln in lines[start + 1:end]]
+    arch = L / DECISIONS_ARCHIVE
+    if arch.exists():
+        out = [("archive", ln) for ln in arch.read_text(encoding="utf-8").splitlines()] + out
+    rows = []
+    for src, ln in out:
+        s = ln.strip()
+        if not s.startswith("|") or re.fullmatch(r"\|[\s:|-]+\|", s) or re.match(r"\|\s*Stamp\s*\|", s):
+            continue
+        rows.append((src, ln))
+    return rows
+
+
+def cmd_decisions(a):
+    """Print binding decisions from the brief and the archive, optionally filtered; superseded rows only with --all."""
+    rows = [(s, r) for s, r in decision_rows() if a.all or not is_superseded(r)]
+    if a.grep:
+        rows = [(s, r) for s, r in rows if a.grep.lower() in r.lower()]
+    if not rows:
+        print("no matching decisions" if a.grep else "no decisions recorded")
+        return
+    print("| Stamp | Decision | Binds |  (source)")
+    for s, r in rows:
+        print(f"{r.rstrip()}  ({s})")
+
+
+def memory_report():
+    """(summary lines, issue lines) for the long-lived guidance: lessons, decisions, retro lessons and maps."""
+    lines, issues = [], []
+    fb = ROOT / "docs" / "agent-feedback"
+    files = sorted(f for f in fb.glob("*.md") if not f.name.endswith(RETIRED_SUFFIX)) if fb.is_dir() else []
+    if files:
+        parts = []
+        for f in files:
+            act = [x for x in f.read_text(encoding="utf-8").splitlines() if x.strip().startswith(("-", "*"))]
+            ret = f.with_name(f.stem + RETIRED_SUFFIX)
+            n_ret = len([x for x in ret.read_text(encoding="utf-8").splitlines() if x.startswith("-")]) if ret.exists() else 0
+            unstamped = [x for x in act if not re.match(r"^\s*[-*]\s*\[\d{4}-\d{2}-\d{2}", x)]
+            parts.append(f"{f.stem} {len(act)}" + (f" (+{n_ret} retired)" if n_ret else ""))
+            if len(act) > FEEDBACK_MAX:
+                issues.append(f"{f.name} has {len(act)} lessons (cap {FEEDBACK_MAX}): condense with `lesson {f.stem} --retire`")
+            if unstamped:
+                issues.append(f"{f.name}: {len(unstamped)} lesson(s) with no date or source; re-add them with `lesson` "
+                              "when next touched")
+        lines.append("Lessons: " + ", ".join(parts))
+    else:
+        lines.append("Lessons: none yet (docs/agent-feedback/)")
+    rows = decision_rows()
+    sup = [r for _, r in rows if is_superseded(r)]
+    sup_brief = [r for s, r in rows if s == "brief" and is_superseded(r)]
+    undated = [r for _, r in rows if not re.search(r"\d{4}-\d{2}-\d{2}", r.strip().strip("|").split("|")[0])]
+    lines.append(f"Decisions: {len([1 for s, r in rows if s == 'brief' and not is_superseded(r)])} in the brief, "
+                 f"{len([1 for s, r in rows if s == 'archive' and not is_superseded(r)])} archived, {len(sup)} superseded")
+    if sup_brief:
+        issues.append(f"{len(sup_brief)} superseded decision(s) still in the brief: run `brief-trim`")
+    if undated:
+        issues.append(f"{len(undated)} decision row(s) with no YYYY-MM-DD stamp: brief-trim never archives them")
+    rf = L / "RETRO.md"
+    secs = retro_sections(rf.read_text(encoding="utf-8")) if rf.exists() else []
+    with_l = [s for s in secs if section_lessons(s)]
+    lines.append(f"Retro: {len(secs)} sprint(s), {len(with_l)} with lessons")
+    if len(secs) >= 2 and not section_lessons(secs[-1]) and not section_lessons(secs[-2]):
+        issues.append("the last two retros recorded no lessons")
+    maps = [f for f in (L / "maps").glob("*.md") if f.name != Path(DECISIONS_ARCHIVE).name] if (L / "maps").is_dir() else []
+    stale = stale_map_report()
+    lines.append(f"Maps: {len(maps)}" + (f", {len(stale)} stale: {', '.join(stale)}" if stale else ""))
+    if stale:
+        issues.append(f"{len(stale)} map(s) {MAP_STALE_COMMITS}+ commits old: re-scout or delete")
+    return lines, issues
+
+
+def cmd_memory(a):
+    """Health of the long-lived guidance, for setup and phase gates."""
+    lines, issues = memory_report()
+    print("MEMORY\n" + "\n".join("  " + x for x in lines))
+    print("Issues:\n" + "\n".join("  - " + x for x in issues) if issues else "Issues: none")
+
+
+DECISIONS_INLINE_MAX = 8
+BINDS_EVERYONE = ("all", "every", "everything", "*", "project")
+
+
+def ticket_decisions(pairs):
+    """Binding decision rows whose Binds cell names one of these tickets, its phase, or everyone."""
+    keys = set()
+    for tid, t in pairs:
+        keys.add(tid)
+        if t.get("phase"):
+            keys.add(t["phase"])
+    out = []
+    for _, row in decision_rows():
+        if is_superseded(row):
+            continue
+        cells = [x.strip() for x in row.strip().strip("|").split("|")]
+        binds = cells[2] if len(cells) > 2 else ""
+        words = {w.strip(".,;:()").lower() for w in re.split(r"[\s,;/]+", binds) if w}
+        if words & set(BINDS_EVERYONE) or any(
+                re.search(r"(?<![\w-])" + re.escape(k) + r"(?![\w-])", binds, re.I) for k in keys):
+            out.append(cells)
+    return out
+
+
+def with_decisions(fields, pairs, cmd):
+    """Insert a DECISIONS field after INPUTS when decisions bind these tickets: the few rows an agent must honour,
+    inline, so it need not search the whole log."""
+    rows = ticket_decisions(pairs)
+    if not rows:
+        return fields
+    shown = "; ".join(f"[{r[0]}] {r[1] if len(r) > 1 else ''}" for r in rows[:DECISIONS_INLINE_MAX])
+    more = len(rows) - DECISIONS_INLINE_MAX
+    if more > 0:
+        shown += f"; +{more} more: `{cmd} decisions --grep {pairs[0][0]}`"
+    i = next((k for k, (name, _) in enumerate(fields) if name == "INPUTS"), len(fields) - 1)
+    return fields[:i + 1] + [("DECISIONS", shown + " (binding)")] + fields[i + 1:]
 
 
 def select_from_roadmap(a, conf, c):
@@ -1275,20 +1436,116 @@ def cmd_diff(a):
     print("\n".join(s[-25:]) if s else "(no changes)")
 
 
-def run_checks(target, conf, log):
-    cmds = [x for x in (conf.get("build_cmd"), conf.get("test_cmd"), conf.get("stack_check_cmd")) if x]
-    if not cmds:
+CHECK_KEYS = ("format_cmd", "lint_cmd", "typecheck_cmd", "build_cmd", "test_cmd", "stack_check_cmd")   # cheap first
+
+
+def run_checks(target, conf, log, label=None):
+    """Run the configured checks in order, stopping at the first failure. A failing test command is rerun once
+    (unless retry_flaky is off): a pass on the rerun counts as a pass and is recorded in .coniso/flaky.jsonl."""
+    cmds = [(k, conf[k]) for k in CHECK_KEYS if conf.get(k)]
+    if not any(k in ("build_cmd", "test_cmd", "stack_check_cmd") for k, _ in cmds):
         return None, "no build/test command configured"
     text = []
     code = 0
-    for cmd in cmds:
+    for key, cmd in cmds:
         r = run(cmd, cwd=target, shell=True, timeout=conf.get("test_timeout", 1200))
         text.append(f"$ {cmd}\n{r.stdout or ''}{r.stderr or ''}\n[exit {r.returncode}]\n")
         code = r.returncode
+        if code != 0 and key == "test_cmd" and conf.get("retry_flaky", True):
+            r2 = run(cmd, cwd=target, shell=True, timeout=conf.get("test_timeout", 1200))
+            text.append(f"$ {cmd}   (rerun: flaky check)\n{r2.stdout or ''}{r2.stderr or ''}\n[exit {r2.returncode}]\n")
+            if r2.returncode == 0:
+                text.append(f"FLAKY: `{cmd}` failed (exit {code}) then passed on rerun; recorded in .coniso/flaky.jsonl\n")
+                with (L / "flaky.jsonl").open("a", encoding="utf-8") as fh:
+                    fh.write(json.dumps({"ts": now_z(), "where": label or p(target), "cmd": cmd,
+                                         "first_exit": code, "log": p(log)}) + "\n")
+            code = r2.returncode
         if code != 0:
+            text.append(f"CHECK FAILED: {key[:-4]}\n")
             break
     log.write_text("\n".join(text), encoding="utf-8")
     return code, "\n".join(text)
+
+
+SECRET_PATTERNS = [
+    ("private key", r"-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY"),
+    ("AWS access key", r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"),
+    ("GitHub token", r"\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{60,})\b"),
+    ("Slack token", r"\bxox[abposr]-[A-Za-z0-9-]{10,}"),
+    ("Stripe live key", r"\b[rs]k_live_[A-Za-z0-9]{20,}"),
+    ("Google API key", r"\bAIza[0-9A-Za-z_-]{35}\b"),
+    ("Anthropic key", r"\bsk-ant-[A-Za-z0-9_-]{20,}"),
+    ("OpenAI-style key", r"\bsk-(?:proj-)?[A-Za-z0-9]{32,}\b"),
+    ("JWT", r"\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"),
+    ("Supabase service key", r"(?i)service_role[\"']?\s*[:=]\s*[\"'][A-Za-z0-9._-]{30,}"),
+    ("assigned secret", r"(?i)\b[\w-]*(?:api[_-]?key|secret|passw(?:or)?d|token)[\w-]*[\"']?\s*[:=]\s*"
+                        r"[\"'][^\"'\s$<{]{16,}[\"']"),
+    ("connection string with password", r"\b[a-z][a-z0-9+]*://[^/\s:@]+:[^@\s/]{6,}@[\w.-]+"),
+]
+SECRET_FILES = r"(?:^|/)(?:\.env(?:\.[\w.-]+)?|id_[rd]sa|id_ed25519|[\w.-]*\.pem|[\w.-]*\.p12|[\w.-]*\.pfx|credentials\.json|service-account[\w.-]*\.json)$"
+SECRET_FILES_OK = r"(?:^|/)\.env\.(?:example|sample|template|dist)$"
+ALLOW_MARK = "coniso:allow-secret"
+
+
+def scan_secrets(diff_text, conf):
+    """Findings (file, line no, kind) in the added lines of a unified diff, plus added secret-looking files.
+    A line containing `coniso:allow-secret`, or a path matching config secret_allow (regexes), is skipped."""
+    allow = [re.compile(x) for x in conf.get("secret_allow", [])]
+    found, f, n = [], None, 0
+    for ln in diff_text.splitlines():
+        if ln.startswith("+++ "):
+            f = ln[4:].strip()
+            f = f[2:] if f.startswith("b/") else (None if f == "/dev/null" else f)
+            if f and re.search(SECRET_FILES, f) and not re.search(SECRET_FILES_OK, f) and not any(a.search(f) for a in allow):
+                found.append((f, 0, "secret-looking file"))
+            continue
+        m = re.match(r"^@@ -\d+(?:,\d+)? \+(\d+)", ln)
+        if m:
+            n = int(m.group(1)) - 1
+            continue
+        if ln.startswith("+") and f:
+            n += 1
+            if ALLOW_MARK in ln or any(a.search(f) for a in allow):
+                continue
+            for kind, rx in SECRET_PATTERNS:
+                if re.search(rx, ln[1:]):
+                    found.append((f, n, kind))
+                    break
+        elif not ln.startswith("-"):
+            n += 1
+    return found
+
+
+def secret_report(found):
+    return ("SECRETS: " + "; ".join(f"{f}:{n} {k}" if n else f"{f} ({k})" for f, n, k in found[:10])
+            + (f"; +{len(found) - 10} more" if len(found) > 10 else "")
+            + f". Move them to untracked config or env vars. A deliberate fake (a test fixture) gets `{ALLOW_MARK}` "
+              "on its line, or its path in config secret_allow.")
+
+
+TEST_PATH = r"(?:^|/)(?:tests?|__tests__|specs?|testing)/|(?:^|/)test_[^/]*$|[._-](?:test|spec|tests)\.[\w]+$|_test\.\w+$|Tests?\.\w+$"
+CODE_EXT = (".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".go", ".rs", ".java", ".kt", ".kts", ".cs", ".gd",
+            ".c", ".cc", ".cpp", ".h", ".hpp", ".rb", ".php", ".swift", ".dart", ".lua", ".scala", ".vue", ".svelte", ".sql")
+
+
+def ticket_diff(t, conf, names=False):
+    """A ticket worktree's diff against its base, new files included (text, or changed paths with names=True)."""
+    wt = Path(t["wt"])
+    git(["add", "-N", "--"] + pathspec_excludes(conf)[2:] + ["."], wt, check=False)
+    args = ["diff", "--name-only"] if names else ["diff", "-U0"]
+    out = git(args + [t["base"]] + pathspec_excludes(conf), wt, check=False).stdout
+    return out.split("\n") if names else out
+
+
+def test_change_warning(paths):
+    """A warning when source files changed and no test file did, else None."""
+    paths = [x for x in paths if x]
+    tests = [x for x in paths if re.search(TEST_PATH, x)]
+    code = [x for x in paths if x.endswith(CODE_EXT) and x not in tests]
+    if code and not tests:
+        return (f"TESTS UNCHANGED: {len(code)} source file(s) changed and no test file did "
+                f"({', '.join(code[:3])}{' …' if len(code) > 3 else ''})")
+    return None
 
 
 def tree_id(path, conf):
@@ -1327,13 +1584,27 @@ def cmd_test(a):
         t = ticket(c, a.id)
         target = Path(t["wt"]) if t.get("wt") else ROOT
     log = L / "reports" / f"{safe(a.id)}.test.log"
+    if t is not None and t.get("wt") and t.get("base"):
+        found = scan_secrets(ticket_diff(t, conf), conf)
+        if found:
+            print(f"TEST {a.id}: FAIL (secret scan) · nothing else ran")
+            print(secret_report(found))
+            sys.exit(1)
+        warn = test_change_warning(ticket_diff(t, conf, names=True))
+        if bool(warn) != bool(t.get("tests_unchanged")):
+            with Lock():
+                c = load_sprint()
+                ticket(c, a.id)["tests_unchanged"] = bool(warn)
+                save_sprint(c)
+        if warn:
+            print(warn + "; a reviewer will ask why unless the acceptance items need no test")
     tree = tree_id(target, conf) if (t is not None and t.get("wt") and conf.get("test_cache", True) and not a.fresh) else None
     hit = cached_pass(t, tree)
     if hit:
         print(f"TEST {a.id}: PASS (cached: tree {tree[:7]} unchanged since its last run at {hit['ts']}; "
               f"`test {a.id} --fresh` reruns) · log {hit['log']}")
         return
-    code, text = run_checks(target, conf, log)
+    code, text = run_checks(target, conf, log, label=a.id)
     if code is None:
         print(f"TEST {a.id}: SKIPPED — {text}")
         sys.exit(2)
@@ -1343,7 +1614,8 @@ def cmd_test(a):
             ticket(c, a.id)["test_cache"] = {"tree": tree, "code": 0, "ts": now_z(), "log": p(log)}
             save_sprint(c)
     tail = text.strip().splitlines()[-(5 if code == 0 else 25):]
-    print(f"TEST {a.id}: {'PASS' if code == 0 else 'FAIL'} (exit {code}) · log {p(log)}")
+    flaky = " · FLAKY (failed, then passed on rerun)" if code == 0 and "FLAKY:" in text else ""
+    print(f"TEST {a.id}: {'PASS' if code == 0 else 'FAIL'} (exit {code}){flaky} · log {p(log)}")
     print("\n".join(tail))
     sys.exit(0 if code == 0 else 1)
 
@@ -1443,6 +1715,14 @@ def cmd_merge(a):
         git(["reset", "--hard", "-q", "HEAD"], ROOT, check=False)
         mark("failed", "squash produced no net changes")
         die(f"{a.id}: no net changes after squash", code=4)
+    found = scan_secrets(git(["diff", "--cached", "-U0"], ROOT, check=False).stdout, conf)
+    if found and not getattr(a, "allow_secrets", False):
+        git(["reset", "--hard", "-q", "HEAD"], ROOT, check=False)
+        mark("failed", f"secret scan: {len(found)} finding(s)")
+        print(f"SECRETS BLOCKED {a.id}: main reset, nothing committed")
+        print(secret_report(found))
+        print(f"Send the builder the list. `merge {a.id} --allow-secrets` only on the user's say-so.")
+        sys.exit(6)
     checks = "skipped (--no-test)"
     if not a.no_test:
         log = L / "reports" / f"{safe(a.id)}.merge-test.log"
@@ -1451,7 +1731,7 @@ def cmd_merge(a):
         if hit:     # the squash produced exactly the tree the ticket's last passing `test` ran on
             checks = f"PASS (cached: tree {tree[:7]} already tested at {hit['ts']}, log {hit['log']})"
         else:
-            code, text = run_checks(ROOT, conf, log)
+            code, text = run_checks(ROOT, conf, log, label=f"merge {a.id}")
             if code not in (None, 0):
                 git(["reset", "--hard", "-q", "HEAD"], ROOT, check=False)
                 mark("failed", f"integration checks failed on {c.get('branch')} after squash; log {p(log)}")
@@ -1474,6 +1754,60 @@ def cmd_merge(a):
     ready = next_ready(load_sprint())
     if ready:
         print(f"Now ready: {', '.join(ready)}")
+
+
+def cmd_revert(a):
+    """Undo a merged ticket: a revert commit of its squash on the sprint branch, and the ticket back to queued."""
+    conf = cfg()
+    c = load_sprint()
+    t = ticket(c, a.id)
+    sha = t.get("merged_sha")
+    if t["state"] != "merged" or not sha:
+        die(f"{a.id} is {t['state']}; only a merged ticket can be reverted")
+    if not a.reason or not a.reason.strip():
+        die("say why: --reason \"<what broke>\"")
+    after = [x for x, tt in c["tickets"].items() if a.id in tt.get("deps", []) and tt["state"] == "merged"]
+    if after and not a.force:
+        die(f"merged tickets depend on {a.id}: {', '.join(after)}. Revert them first, or pass --force on the user's say-so")
+    if conf.get("worktrees", True):
+        dirty = main_dirty()
+        if dirty:
+            die(f"main checkout has uncommitted changes ({dirty[0][3:]} …); commit or stash them first")
+        if c.get("branch") and current_branch() != c["branch"]:
+            die(f"main checkout is on {current_branch()} but the sprint merges into {c['branch']}")
+        r = git(["revert", "--no-commit", sha], ROOT, check=False)
+        if r.returncode != 0:
+            git(["revert", "--abort"], ROOT, check=False)
+            git(["reset", "--hard", "-q", "HEAD"], ROOT, check=False)
+            die(f"revert of {sha[:7]} conflicts with later work: {(r.stderr or r.stdout).strip()[:200]}", code=3)
+        r = git(git_identity_args(ROOT) + ["commit", "-q", "-m", f"Revert {a.id}: {t['title']}",
+                                           "-m", f"Reason: {a.reason.strip()}", "-m", f"Reverts {sha}. Coniso sprint {c['name']}"],
+                ROOT, check=False)
+        if r.returncode != 0:
+            git(["reset", "--hard", "-q", "HEAD"], ROOT, check=False)
+            die(f"commit refused (hook?): {(r.stderr or r.stdout).strip()[:300]}", code=5)
+        rsha = git(["rev-parse", "HEAD"], ROOT).stdout.strip()
+        if git(["rev-parse", "--verify", "--quiet", f"refs/heads/coniso/{safe(a.id)}"], ROOT, check=False).returncode == 0:
+            with redirect_out():
+                cmd_wt(argparse.Namespace(action="remove", id=a.id, force=True))
+    else:
+        rsha = None
+    with Lock():
+        c = load_sprint()
+        t = ticket(c, a.id)
+        t.setdefault("reverts", []).append({"ts": now_z(), "merged_sha": sha, "revert_sha": rsha, "reason": a.reason.strip()})
+        for k in ("merged_sha", "verdict", "wt", "branch", "base"):
+            t[k] = None
+        for k in ("test_cache", "review_round", "tests_unchanged"):
+            t.pop(k, None)
+        t["state"] = "queued"
+        t["attempts"] += 1
+        note(t, "queued", f"reverted {sha[:7]}" + (f" as {rsha[:7]}" if rsha else "") + f": {a.reason.strip()}")
+        save_sprint(c)
+    print(f"REVERTED {a.id}: {sha[:7]} undone" + (f" by {rsha[:7]}" if rsha else " (in-place mode: undo the files by hand)")
+          + f" · ticket back to queued (attempt {t['attempts'] + 1})")
+    print(f"Run `test main`. Before re-dispatching, put the reason in the packet or a fix list, and consider "
+          f"`lesson <specialty> \"<rule>\" --source {a.id}` so it does not happen again.")
 
 
 def cmd_ledger(a):
@@ -1860,6 +2194,58 @@ def cmd_roadmap_sync(a):
 
 
 FEEDBACK_MAX = 30
+RETIRED_SUFFIX = ".retired.md"
+
+
+def lesson_key(line):
+    """Comparable text of a lesson line: no bullet, no [stamp] prefix, no retirement suffix, lowercase, words only."""
+    s = re.sub(r"^\s*[-*]\s*", "", line)
+    s = re.sub(r"^\[[^\]]*\]\s*", "", s)
+    s = s.split(" — retired ")[0]
+    return " ".join(re.findall(r"[a-z0-9]+", s.lower()))
+
+
+def cmd_lesson(a):
+    """Add a stamped lesson, or retire one into <spec>.retired.md with a dated reason. Never commits:
+    the main session commits the lessons file with the related fix."""
+    active = feedback_file(a.spec)
+    retired = active.with_name(active.stem + RETIRED_SUFFIX)
+    lines = active.read_text(encoding="utf-8").splitlines() if active.exists() else []
+    today = dt.date.today().isoformat()
+    if a.retire:
+        if a.text:
+            die("pass either a lesson to add or --retire MATCH, not both")
+        hits = [i for i, ln in enumerate(lines) if ln.strip() and a.retire.lower() in ln.lower()]
+        if len(hits) != 1:
+            die(f"--retire must match exactly one line in {active.relative_to(ROOT).as_posix()}; it matched {len(hits)}")
+        if not a.by:
+            die("--retire needs --by \"<why, or the lesson that replaces it>\"")
+        line_ = lines.pop(hits[0])
+        active.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+        new = not retired.exists()
+        with retired.open("a", encoding="utf-8") as fh:
+            if new:
+                fh.write(f"# Retired lessons — {a.spec}\nNo longer binding. `lesson` refuses to re-add one of these without --force.\n\n")
+            fh.write(f"{line_.rstrip()} — retired {today}: {a.by}\n")
+        print(f"lesson retired from {active.name} to {retired.name} · {len([x for x in lines if x.strip()])} active line(s)")
+        return
+    if not a.text or not a.text.strip():
+        die("give the lesson text, e.g. lesson ui \"Check contrast in dark mode before handing off.\"")
+    text = " ".join(a.text.split())
+    key = lesson_key(text)
+    if any(lesson_key(ln) == key for ln in lines if ln.strip()):
+        die(f"already in {active.name}: nothing added")
+    if retired.exists() and not a.force:
+        old = [ln for ln in retired.read_text(encoding="utf-8").splitlines() if ln.startswith("-") and lesson_key(ln) == key]
+        if old:
+            die(f"this lesson was retired: {old[0].strip()}\nRe-add only if the reason no longer holds: pass --force")
+    stamp = today + (f" · {a.source}" if a.source else "")
+    active.parent.mkdir(parents=True, exist_ok=True)
+    lines.append(f"- [{stamp}] {text}")
+    active.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    n = len([x for x in lines if x.strip()])
+    warn = f" · over {FEEDBACK_MAX}: condense at retro" if n > FEEDBACK_MAX else ""
+    print(f"lesson added to {active.relative_to(ROOT).as_posix()} ({n} line(s){warn}); commit it with the related fix")
 
 
 def token_totals(c):
@@ -1880,28 +2266,50 @@ def token_totals(c):
             "Tokens per role: " + ", ".join(f"{k} {v:,}" for k, v in sorted(per_role.items(), key=lambda x: -x[1]))]
 
 
-def last_lessons():
-    """The Lessons lines of the last sprint in RETRO.md (what the Director reads at setup)."""
-    f = L / "RETRO.md"
-    if not f.exists():
-        return []
-    text = f.read_text(encoding="utf-8")
-    last = text[text.rfind("\n## ") + 1:] if "\n## " in text else text
+LESSON_PLACEHOLDER = "- (Director: brief gaps, forged specialties worth keeping, routing that the auditor caught)"
+
+
+def retro_sections(text):
+    """RETRO.md split into sections, each starting at a "## " heading (text before the first heading is dropped)."""
+    return [s for s in re.split(r"(?m)^(?=## )", text) if s.startswith("## ")]
+
+
+def section_lessons(section):
+    """The Director's lines under "Lessons:" in one retro section, without the placeholder."""
     out, on = [], False
-    for ln in last.splitlines():
+    for ln in section.splitlines():
         if ln.startswith("Lessons:"):
             on = True
             continue
-        if on and ln.startswith("## "):
-            break
         if on and ln.strip() and "(Director:" not in ln:
             out.append(ln)
     return out
 
 
+def last_lessons(sprints=1):
+    """Lessons from the most recent `sprints` retro sections that recorded any (what the Director reads at setup).
+    Sections whose Lessons are empty or only the placeholder are skipped, so one empty retro hides nothing."""
+    f = L / "RETRO.md"
+    if not f.exists():
+        return []
+    picked = []
+    for sec in reversed(retro_sections(f.read_text(encoding="utf-8"))):
+        ls = section_lessons(sec)
+        if ls:
+            picked.append((sec.splitlines()[0], ls))
+            if len(picked) >= sprints:
+                break
+    if sprints <= 1:
+        return picked[0][1] if picked else []
+    out = []
+    for head, ls in reversed(picked):     # oldest first, like the file
+        out += [head] + ls
+    return out
+
+
 def cmd_retro(a):
     if a.lessons:
-        ls = last_lessons()
+        ls = last_lessons(max(1, a.sprints))
         print("\n".join(ls) if ls else "no lessons recorded")
         return
     c = load_sprint()
@@ -1927,6 +2335,17 @@ def cmd_retro(a):
     if c.get("quickfixes"):
         lines.append(f"Quick fixes: {c['quickfixes']} — " + ", ".join(
             f"{tid}×{t['quickfixes']}" if t["quickfixes"] > 1 else tid for tid, t in c["tickets"].items() if t.get("quickfixes")))
+    rev = [f"{tid} ({r['reason']})" for tid, t in c["tickets"].items() for r in t.get("reverts", [])]
+    if rev:
+        lines.append("Reverted after merge (a lesson each?): " + "; ".join(rev))
+    fl = L / "flaky.jsonl"
+    if fl.exists():
+        since = c.get("created", "")
+        fr = [json.loads(x) for x in fl.read_text(encoding="utf-8").splitlines() if x.strip()]
+        fr = [r for r in fr if r.get("ts", "") >= since]
+        if fr:
+            lines.append(f"Flaky test runs (failed, then passed on rerun): {len(fr)} · "
+                         + ", ".join(sorted({r['where'] for r in fr})) + " · fix or quarantine the flaky tests")
     tk = token_totals(c)
     if tk:
         lines += tk
@@ -1937,15 +2356,27 @@ def cmd_retro(a):
     long_fb = []
     if fb.is_dir():
         for f in sorted(fb.glob("*.md")):
+            if f.name.endswith(RETIRED_SUFFIX):
+                continue
             n = len([x for x in f.read_text(encoding="utf-8").splitlines() if x.strip()])
             if n > FEEDBACK_MAX:
                 long_fb.append(f"{f.name} ({n})")
     if long_fb:
-        lines.append(f"Agent feedback over {FEEDBACK_MAX} lines (condense, director.md §10): " + ", ".join(long_fb))
-    lines += ["Lessons:", "- (Director: brief gaps, forged specialties worth keeping, routing that the auditor caught)", ""]
+        lines.append(f"Agent feedback over {FEEDBACK_MAX} lines (condense with `lesson <spec> --retire`, director.md §10): "
+                     + ", ".join(long_fb))
+    rf = L / "RETRO.md"
+    prior = rf.read_text(encoding="utf-8") if rf.exists() else ""
+    secs = retro_sections(prior)
+    rerun = bool(secs) and secs[-1].startswith(f"## {c['name']} — ")
+    kept = section_lessons(secs[-1]) if rerun else []     # a re-run replaces its own section and keeps its Lessons
+    lines += ["Lessons:"] + (kept or [LESSON_PLACEHOLDER]) + [""]
     text = "\n".join(lines)
-    with (L / "RETRO.md").open("a", encoding="utf-8") as fh:
-        fh.write(text + "\n")
+    if rerun:
+        head = prior[:len(prior) - len(secs[-1])]
+        rf.write_text(head + text + "\n", encoding="utf-8")
+    else:
+        with rf.open("a", encoding="utf-8") as fh:
+            fh.write(text + "\n")
     print(text)
 
 
@@ -2014,10 +2445,29 @@ def accept_range(n):
     return f"acceptance items 1-{n}" if n > 1 else ("acceptance item 1" if n == 1 else "the ticket's objective")
 
 
-def specialty_files(spec):
+def specialty_file(spec):
     own = L / "specialties" / f"{spec}.md"
-    out = [p(own if own.exists() else L / "ref" / "specialties" / f"{spec}.md")]
-    fb = ROOT / "docs" / "agent-feedback" / f"{spec}.md"
+    return own if own.exists() else L / "ref" / "specialties" / f"{spec}.md"
+
+
+def feedback_file(spec):
+    """docs/agent-feedback/<spec>.md, or the legacy name the specialty header gives ("older projects: x.md")
+    when only that one exists. Always a path in the main checkout, never a worktree copy."""
+    fb_dir = ROOT / "docs" / "agent-feedback"
+    canon = fb_dir / f"{spec}.md"
+    if canon.exists():
+        return canon
+    sf = specialty_file(spec)
+    if sf.exists():
+        m = re.search(r"older projects:\s*([\w.-]+\.md)", "\n".join(sf.read_text(encoding="utf-8").splitlines()[:3]))
+        if m and (fb_dir / m.group(1)).exists():
+            return fb_dir / m.group(1)
+    return canon
+
+
+def specialty_files(spec):
+    out = [p(specialty_file(spec))]
+    fb = feedback_file(spec)
     if fb.exists():
         out.append(p(fb))
     return out
@@ -2151,29 +2601,35 @@ def cmd_dispatch(a):
                 workdir = p(ROOT)
             unit, spec = f"{tid}.E1", specs.get(tid, "builder")
             read = " · ".join([p(L / "BRIEF.md"), packet] + specialty_files(spec))
-            path, how = write_assignment(unit, f"ASSIGNMENT {unit} · engineer/{spec} · model {f_['model']} · from {a.from_}", [
+            path, how = write_assignment(unit, f"ASSIGNMENT {unit} · engineer/{spec} · model {f_['model']} · from {a.from_}", with_decisions([
                 ("READ FIRST", read), ("WORKDIR", p(workdir)),
                 ("OBJECTIVE", f"Build ticket {tid} ({t['title']}) so every acceptance item is met, with evidence."),
                 ("OWNS", "** (solo: the whole ticket inside WORKDIR)"), ("INPUTS", inputs), ("BOUNDARIES", bounds),
                 ("DONE WHEN", f"{accept_range(n)} met, each with evidence (test name or file:line); `{cmd} test {tid}` passes."),
                 ("ON DONE", f"after the test passes run `{cmd} set {tid} built --note \"<one phrase>\"` (solo ticket: you record built)."),
-                ("RETURN", f"standard return + detail in {p(L / 'reports' / (unit + '.md'))}")], a.rewrite)
+                ("RETURN", f"standard return + detail in {p(L / 'reports' / (unit + '.md'))}")], [(tid, t)], cmd), a.rewrite)
             rows.append([unit, f"engineer/{spec}", f_["model"], "1", "**", f"ticket {tid}", accept_range(n)])
             spawns.append(spawn_line("coniso:engineer", f_["model"], path))
         else:
             unit = tid
             review = "review lead serves" if a.review == "lead" else "dispatch your own reviewer"
-            path, how = write_assignment(unit, f"ASSIGNMENT {unit} · lead · model {f_['lead']} · from {a.from_}", [
+            path, how = write_assignment(unit, f"ASSIGNMENT {unit} · lead · model {f_['lead']} · from {a.from_}", with_decisions([
                 ("READ FIRST", f"{p(L / 'BRIEF.md')} · {packet}"), ("WORKDIR", p(ROOT)),
                 ("OBJECTIVE", f"Deliver ticket {tid} ({t['title']}) built, tested and handed off with evidence for every acceptance item."),
                 ("OWNS", f"ticket {tid}"), ("INPUTS", inputs), ("BOUNDARIES", bounds),
                 ("DONE WHEN", f"{accept_range(n)} evidenced; `{cmd} validate-handoff {tid}` prints HANDOFF OK; state built."),
                 ("REVIEW", review), ("SLOTS", str(f_["engineers"])),
                 ("ENGINEERS", f"up to {f_['engineers']} (default engineer model {f_.get('engineer_model', 'sonnet')})"),
-                ("RETURN", f"standard return + detail in {p(L / 'reports' / (tid + '.md'))}")], a.rewrite)
+                ("RETURN", f"standard return + detail in {p(L / 'reports' / (tid + '.md'))}")], [(tid, t)], cmd), a.rewrite)
             rows.append([unit, "lead", f_["lead"], "1", f"ticket {tid}", f"ticket {tid}", accept_range(n)])
             spawns.append(spawn_line("coniso:lead", f_["lead"], path))
         used += cost(f_)
+        spec_ = specs.get(tid) if (f_["kind"] == "solo" or a.specialty) else None
+        if spec_ and t.get("spec") != spec_:     # reviewers read this specialty's lessons
+            with Lock():
+                c2 = load_sprint()
+                c2["tickets"][tid]["spec"] = spec_
+                save_sprint(c2)
         if how == "kept":
             print(f"  kept existing {path.name} (--rewrite regenerates it)")
     if len(ids) > 1 or a.plan:
@@ -2299,8 +2755,10 @@ def cmd_review(a):
                         if re.fullmatch(re.escape(safe(first)) + r"\.R\d+\.md", x.name) and x.name != rep.name]
                 inputs += f" · fix list {p(L / 'reports' / (safe(first) + '.fix.md'))}" + "".join(f" · earlier review {p(x)}" for x in prev)
             agent = rv.get("agent", "reviewer")
-            path, _ = write_assignment(unit, f"ASSIGNMENT {unit} · {agent} · model {rv['model']} · from {a.from_}", [
-                ("READ FIRST", f"{p(L / 'BRIEF.md')} · {packets}"), ("WORKDIR", p(t.get("wt") or ROOT)),
+            lessons = sorted({f for x in group if c["tickets"][x].get("spec")
+                              for f in specialty_files(c["tickets"][x]["spec"])[1:]})
+            path, _ = write_assignment(unit, f"ASSIGNMENT {unit} · {agent} · model {rv['model']} · from {a.from_}", with_decisions([
+                ("READ FIRST", " · ".join([p(L / "BRIEF.md"), packets] + lessons)), ("WORKDIR", p(t.get("wt") or ROOT)),
                 ("OBJECTIVE", f"Verify {', '.join(group)} against the acceptance items and the brief through lens {rv['lens']}, and return an evidence-backed verdict."),
                 ("OWNS", f"{p(rep)}, {p(L / 'reports' / unit)}/**, {p(fix)}"), ("LENS", rv["lens"]),
                 ("SCOPE", "delta" if delta else "full"),
@@ -2309,7 +2767,7 @@ def cmd_review(a):
                 ("BOUNDARIES", "Never edit WORKDIR files or run git; probes only under your reports folder."),
                 ("DONE WHEN", f"a verdict per formats.md in your report, with {items} each marked met or unmet with evidence. "
                               f"Then run `{cmd} verdict {','.join(group)} --report {p(rep)}` and put the line it prints in your return."),
-                ("RETURN", f"verdict return (formats.md) + detail in {p(rep)}")], True)
+                ("RETURN", f"verdict return (formats.md) + detail in {p(rep)}")], [(x, c["tickets"][x]) for x in group], cmd), True)
             rows.append([unit, f"{agent}/{rv['lens']}", rv["model"], "1",
                          f".coniso/reports/{unit}.md, .coniso/reports/{unit}/**, .coniso/reports/{fix.name}",
                          ", ".join(f"ticket {x}" for x in group), "verdict"])
@@ -2920,6 +3378,9 @@ def main():
     s.add_argument("--roadmap")
     s.add_argument("--test")
     s.add_argument("--build")
+    s.add_argument("--lint", help="lint command run before build and test (e.g. 'ruff check .', 'npx eslint .'); '' clears it")
+    s.add_argument("--typecheck", help="type check run before build and test (e.g. 'npx tsc --noEmit', 'mypy src'); '' clears it")
+    s.add_argument("--format-check", dest="format", help="formatting check, not a fixer (e.g. 'npx prettier --check .'); '' clears it")
     s.add_argument("--setup", help="command run in each new worktree, e.g. 'npm ci' or 'dotnet restore'")
     s.add_argument("--link", help="comma list of untracked dirs to link into worktrees, e.g. node_modules")
     s.add_argument("--copy", help="comma list of untracked files to copy into worktrees, e.g. .env.local")
@@ -3010,7 +3471,15 @@ def main():
     s.add_argument("--no-test", action="store_true")
     s.add_argument("--keep", action="store_true")
     s.add_argument("--fresh", action="store_true", help="run the integration checks even if the squashed tree already passed `test`")
+    s.add_argument("--allow-secrets", dest="allow_secrets", action="store_true",
+                   help="merge despite secret-scan findings (only on the user's say-so)")
     s.set_defaults(fn=cmd_merge)
+
+    s = sp.add_parser("revert", help="undo a merged ticket with a revert commit and send it back to queued")
+    s.add_argument("id")
+    s.add_argument("--reason", required=True, help="what broke")
+    s.add_argument("--force", action="store_true", help="revert even though merged tickets depend on it")
+    s.set_defaults(fn=cmd_revert)
 
     s = sp.add_parser("ledger")
     s.add_argument("action", choices=["add", "stats"])
@@ -3097,8 +3566,28 @@ def main():
     s.set_defaults(fn=cmd_brief_trim)
 
     s = sp.add_parser("retro")
-    s.add_argument("--lessons", action="store_true", help="print only the last sprint's Lessons lines; writes nothing")
+    s.add_argument("--lessons", action="store_true",
+                   help="print the Lessons lines of the last sprint that recorded any; writes nothing")
+    s.add_argument("--sprints", type=int, default=1,
+                   help="with --lessons: how many recent sprints with lessons to print, each under its heading (default 1)")
     s.set_defaults(fn=cmd_retro)
+
+    s = sp.add_parser("decisions", help="search the Decisions log in the brief and its archive (superseded rows hidden)")
+    s.add_argument("--grep", help="case-insensitive text to match in a row")
+    s.add_argument("--all", action="store_true", help="include SUPERSEDED rows")
+    s.set_defaults(fn=cmd_decisions)
+
+    s = sp.add_parser("memory", help="health of lessons, decisions, retro lessons and maps (setup and phase gates)")
+    s.set_defaults(fn=cmd_memory)
+
+    s = sp.add_parser("lesson", help="add a stamped lesson to docs/agent-feedback/<spec>.md, or retire one with a record")
+    s.add_argument("spec", help="specialty, e.g. builder, ui, net")
+    s.add_argument("text", nargs="?", help="the lesson: a one-line imperative")
+    s.add_argument("--source", help="where it came from: a roadmap ticket id, a sprint, or 'user'")
+    s.add_argument("--retire", metavar="MATCH", help="move the one active lesson containing MATCH to <spec>.retired.md")
+    s.add_argument("--by", help="with --retire: why, or the lesson that replaces it")
+    s.add_argument("--force", action="store_true", help="add even though a retired lesson says the same thing")
+    s.set_defaults(fn=cmd_lesson)
 
     s = sp.add_parser("close")
     s.add_argument("--force", action="store_true")

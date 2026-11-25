@@ -22,6 +22,7 @@ WORKDIR: <absolute path printed by `CONISO wt add <id>`; the repo root for leads
 OBJECTIVE: <one outcome-shaped sentence>
 OWNS: <files/globs this unit may write — nothing else>
 INPUTS: <paths, prior reports — pointers only, never pasted content>
+DECISIONS: <Decisions log rows whose Binds names this ticket, its phase or all — binding>   (`dispatch` and `review` write it when any match)
 BOUNDARIES: <out of scope; decisions that are not yours>
 DONE WHEN: <testable criteria — for a ticket, its acceptance items by number>
 SCOPE: full | delta   (reviewers only; delta = fix list + files the fix touched; omit for full)
@@ -94,7 +95,7 @@ RULING: <line printed by CONISO verdict>
 Number each problem and give for each:
 - where it is (file:line);
 - what is wrong;
-- what "fixed" looks like as a check.
+- what "fixed" looks like as a check; for a behaviour bug, the regression test that must fail before the fix and pass after.
 
 A builder must be able to execute it without guessing.
 

@@ -24,7 +24,9 @@ Run as: `{cmd} <command>` (absolute path; works from any worktree). Never call g
 | Term | Means exactly |
 |------|---------------|
 
-## Decisions log (append-only, stamped)
+## Decisions log (stamped; rows are never deleted)
+Stamp: `YYYY-MM-DD · <ticket id>`. Binds: the ticket ids, phase ids (e.g. `P2`) or areas it governs, or `all`; ticket and phase ids and `all` put the row into those tickets' assignments. To retire a row, prefix its Decision with `SUPERSEDED by <stamp>:`. `brief-trim` moves older and superseded rows to `.coniso/maps/decisions.md`; `{cmd} decisions --grep <term>` searches both.
+
 | Stamp | Decision | Binds |
 |-------|----------|-------|
 

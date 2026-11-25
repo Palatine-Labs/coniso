@@ -30,7 +30,7 @@ Builders never judge their own work. Finished tickets go to reviewers, which the
 ## Setup (once per session, every call)
 
 1. If `.coniso/config.json` is missing, or `.coniso/VERSION` differs from 1.2.0, initialise from the repo root:
-   `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/coniso.py" init --roadmap <docs/roadmap/X.html> --test "<test cmd>" [--build "<cmd>"] [--setup "<cmd per new worktree>"] [--link node_modules] [--copy .env.local] [--stack <pack>|none]`
+   `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/coniso.py" init --roadmap <docs/roadmap/X.html> --test "<test cmd>" [--build "<cmd>"] [--lint "<cmd>"] [--typecheck "<cmd>"] [--format-check "<cmd>"] [--setup "<cmd per new worktree>"] [--link node_modules] [--copy .env.local] [--stack <pack>|none]`
    - Use `python` or `py -3` if `python3` is missing.
    - **Permissions are opt-in.** Init never edits Claude settings. When it (or preflight) prints `PERMISSIONS NOT CONFIGURED`, ask the user once, in one message: list exactly what it would add to `.claude/settings.local.json` (local, git-excluded): the allow rules, and any env fix it names. On yes run `CONISO permissions --write`; on no run `CONISO permissions --decline` and carry on (agents may hit prompts). Never write or edit the settings file yourself.
    - **Unattended sprints:** only when the user asks for them, ask separately before running `CONISO permissions --accept-edits` (sets acceptEdits as the project's default mode). `CONISO permissions --remove` undoes everything Coniso added.
@@ -96,7 +96,7 @@ Builders never judge their own work. Finished tickets go to reviewers, which the
 - Merge only passed tickets. Use `--force` only on the user's say-so.
 - Coniso is the only orchestration authority for code work. Format skills (docx, xlsx, pdf, pptx) run inside the worker that produces that file.
 - **Every delegation plan with more than one unit passes `CONISO validate-plan` before the auditor sees it or anything is spawned.** A single-unit dispatch (one manager, lead, engineer or reviewer) has nothing for D3 or D6 to check, so it skips the table; its assignment file still carries every formats.md field.
-- **Lessons.** When the user critiques an agent's work, append a one-line imperative lesson to `docs/agent-feedback/<specialty>.md` and commit it with the related fix. Engineers read that file before working.
+- **Lessons.** When the user critiques an agent's work, record a one-line imperative with `CONISO lesson <specialty> "<lesson>" --source <ticket id or "user">` and commit `docs/agent-feedback/<specialty>.md` with the related fix. The command stamps the line with the date and source, and refuses duplicates and lessons that were retired. Engineers read that file before working. Retire a lesson with `--retire` (see director.md §10), never by deleting it.
 - **Specialties** live in `.coniso/ref/specialties/`: builder, artisan, batch, tester, ui, net, level, audio, docs, synth. A stack pack or the team can add more in `.coniso/specialties/`, which take precedence.
   - **Forge** a new one when three or more packets share a need. Copy `_template.md` to `.coniso/specialties/<name>.md`; engineers check there first.
   - **Promote** a proven one by adding it to the plugin's references in a new plugin version.

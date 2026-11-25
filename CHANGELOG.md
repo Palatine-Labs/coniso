@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0-dev.1] - 2026-11-24
+
+Dev pre-release on the `dev` branch: install with `/plugin marketplace add Palatine-Labs/coniso#dev`. `main` stays on 1.2.0 until this is promoted.
+
+### Added — pipeline checks
+- **Lint, type check and format check.** `init --lint`, `--typecheck` and `--format-check` add commands that run before build and test, cheapest first, in `test`, `merge` and `land`. The first failure stops the run and is named (`CHECK FAILED: lint`). Pass `''` to clear one.
+- **Secret scan.** `test` scans a ticket's diff, and `merge` scans the squash, for private keys, cloud and API tokens, live payment keys, JWTs, credentialed connection strings, hard-coded secret assignments, and files such as `.env` or `*.pem`. `test` fails; `merge` resets main, marks the ticket failed and exits 6 (`SECRETS BLOCKED`). A deliberate fake gets `coniso:allow-secret` on its line or its path in config `secret_allow`. `merge --allow-secrets` is for the user's say-so only.
+- **Tests-unchanged warning.** `test` prints `TESTS UNCHANGED` when source files changed and no test file did, and records it on the ticket. Reviewers treat it as a finding unless the acceptance items need no test.
+- **Flaky detection.** A failing test command is rerun once. A pass on the rerun counts as a pass, is marked `FLAKY` and recorded in `.coniso/flaky.jsonl`, and `retro` lists it. Set config `retry_flaky: false` to turn it off.
+- **`revert <id> --reason …`** undoes a merged ticket with a revert commit on the sprint branch and sends it back to queued (refusing if a merged ticket depends on it). `retro` lists reverts with their reasons.
+
+A memory pass. Lessons, decisions and retro notes now build up across sprints instead of being lost to trimming, empty retros or unrecorded pruning.
+
+### Added
+- **`lesson <spec> "<text>" [--source ID]`** appends a stamped lesson (`- [YYYY-MM-DD · source] …`) to `docs/agent-feedback/<spec>.md`. It refuses duplicates, and refuses a lesson that was retired unless `--force` is passed.
+- **`lesson <spec> --retire MATCH --by "<reason>"`** moves one lesson to `<spec>.retired.md` with the date and reason, so condensing a file leaves a record and a dropped lesson isn't silently re-added. `retro` doesn't count `*.retired.md` toward the 30-line cap.
+- **`decisions [--grep TERM] [--all]`** searches the brief's Decisions log and `.coniso/maps/decisions.md` together. Rows whose Decision starts with `SUPERSEDED` are hidden unless `--all` is passed.
+- **`retro --lessons --sprints N`** prints the Lessons of the last N sprints that recorded any, each under its heading. The Director reads three at setup.
+- `preflight` lists scout maps written 30 or more commits ago.
+- **Decisions scoped to each ticket.** `dispatch` and `review` add a `DECISIONS` line to an assignment when a Decisions log row's Binds names the ticket, its phase or `all`. Agents get the few rows that bind them inline; superseded rows are left out. Leads copy it to their engineers.
+- **Reviewers read the engineer's lessons.** `dispatch` records a ticket's specialty, and `review` puts that specialty's lessons file in the reviewer's READ FIRST. Breaking a lesson is a spec finding.
+- **`memory`** reports lessons per specialty (and how many are retired), decisions in the brief, archived and superseded, retro sprints with lessons, and stale maps, with a list of issues. `preflight` prints the issues in one line.
+- **Phase-gate memory review** (director.md §9): before go/no-go the Director promotes recurring retro lessons, retires what the phase made false, fixes `memory` issues, and adds a Memory block to the gate report for the user to approve.
+- **Research ahead** (director.md §9): at a gate, the Director dispatches up to 3 docs scouts for libraries, APIs and versions the next phase needs that no map covers. Scout maps start with a `Researched:` date and versions line.
+- Review failures feed lessons: at retro the Director turns a retried ticket's fix list into a `lesson` when a one-line rule would have prevented it. Fix lists name the regression test that locks each behaviour bug.
+
+### Changed
+- `retro --lessons` skips sections with no lessons recorded, so one empty retro no longer hides earlier lessons.
+- Re-running `retro` in the same sprint rewrites that sprint's section and keeps its Lessons, instead of appending a second placeholder section.
+- `brief-trim` also archives `SUPERSEDED` rows, and its pointer names the `decisions` command. Reviewers (spec lens) run `decisions --grep` for each area a diff changes, so archived decisions are still checked.
+- Dispatch finds a lessons file kept under a specialty's legacy name (e.g. `audio-designer.md`) when the current name is missing.
+- The engineer prompt reads the lessons file named in READ FIRST (main checkout) instead of the worktree copy, which can be older than the newest lesson.
+- The brief template's Decisions log is no longer labelled "append-only". It gives the stamp format and the supersede rule.
+
 ## [1.2.0] - 2026-11-10
 
 A usage pass on small work and on test runs. Review stays on every ticket that merges; what shrinks is the ceiling a reviewer is given for a small diff, the number of times a suite runs per ticket, and the context an auditor reads.
@@ -99,7 +133,8 @@ First public release.
 - **Engineer specialties.** builder, tester, ui, net, level, audio, docs, batch, artisan and synth, plus forging new specialties and a lessons loop (`docs/agent-feedback/`).
 - **Stack-pack mechanism** (`init --stack <name>`) for project-specific rules, specialties, checks, review lens and proving pass. No packs ship in 1.0.0.
 
-[Unreleased]: https://github.com/Palatine-Labs/coniso/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/Palatine-Labs/coniso/compare/v1.3.0-dev.1...HEAD
+[1.3.0-dev.1]: https://github.com/Palatine-Labs/coniso/compare/v1.2.0...v1.3.0-dev.1
 [1.2.0]: https://github.com/Palatine-Labs/coniso/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/Palatine-Labs/coniso/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/Palatine-Labs/coniso/compare/v1.0.0...v1.0.1
