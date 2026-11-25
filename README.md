@@ -64,6 +64,15 @@ claude plugin marketplace add Palatine-Labs/coniso
 claude plugin install coniso@coniso
 ```
 
+**Dev channel.** Pre-releases (versions like `1.3.0-dev.1`) live on the `dev` branch and are tagged as GitHub pre-releases. To try one, add the marketplace pinned to that branch (remove a `main` copy first with `/plugin marketplace remove coniso`):
+
+```
+/plugin marketplace add Palatine-Labs/coniso#dev
+/plugin install coniso@coniso
+```
+
+Pin a single pre-release with its tag instead, e.g. `Palatine-Labs/coniso#v1.3.0-dev.1`. Run `init` again in each project after updating so `.coniso/` picks up the new script and references.
+
 Install it from one source only. A copy added from Anthropic's directory on claude.ai appears in Claude Code as `coniso@synced`; if you also install `coniso@coniso`, disable one of them.
 
 ### Requirements

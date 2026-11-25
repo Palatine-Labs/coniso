@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0-dev.1] - 2026-11-24
+
+Dev pre-release on the `dev` branch: install with `/plugin marketplace add Palatine-Labs/coniso#dev`. `main` stays on 1.2.0 until this is promoted.
+
 ### Added — pipeline checks
 - **Lint, type check and format check.** `init --lint`, `--typecheck` and `--format-check` add commands that run before build and test, cheapest first, in `test`, `merge` and `land`. The first failure stops the run and is named (`CHECK FAILED: lint`). Pass `''` to clear one.
 - **Secret scan.** `test` scans a ticket's diff, and `merge` scans the squash, for private keys, cloud and API tokens, live payment keys, JWTs, credentialed connection strings, hard-coded secret assignments, and files such as `.env` or `*.pem`. `test` fails; `merge` resets main, marks the ticket failed and exits 6 (`SECRETS BLOCKED`). A deliberate fake gets `coniso:allow-secret` on its line or its path in config `secret_allow`. `merge --allow-secrets` is for the user's say-so only.
@@ -129,7 +133,8 @@ First public release.
 - **Engineer specialties.** builder, tester, ui, net, level, audio, docs, batch, artisan and synth, plus forging new specialties and a lessons loop (`docs/agent-feedback/`).
 - **Stack-pack mechanism** (`init --stack <name>`) for project-specific rules, specialties, checks, review lens and proving pass. No packs ship in 1.0.0.
 
-[Unreleased]: https://github.com/Palatine-Labs/coniso/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/Palatine-Labs/coniso/compare/v1.3.0-dev.1...HEAD
+[1.3.0-dev.1]: https://github.com/Palatine-Labs/coniso/compare/v1.2.0...v1.3.0-dev.1
 [1.2.0]: https://github.com/Palatine-Labs/coniso/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/Palatine-Labs/coniso/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/Palatine-Labs/coniso/compare/v1.0.0...v1.0.1
