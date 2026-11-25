@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0-dev.2] - 2026-11-24
+
+Dev pre-release. Fixes to 1.3.0-dev.1's pipeline checks and memory, found by probing them with ordinary code.
+
+### Changed
+- **The secret scan blocks only on shapes that are a credential by themselves**: private keys, AWS, GitHub, Slack, Google, Anthropic and OpenAI-style keys, live Stripe keys, Supabase service keys, and `.env`, SSH key, key-store and credentials files. In dev.1 it also blocked on `TOKEN_TYPE = "authorization_code_grant"`, `password_reset_template = "emails/password_reset.html"`, local `postgres://user:pass@db` URLs, test fixtures and public `.pem` certificates. Those shapes (JWTs, token-ish assignments, credentialed URLs, `.pem`/`.key`/`.crt` files) are now `SECRET HINTS`: `test` prints them, they never block, and the reviewer rules on each. An assignment is a hint only when its value mixes letters and digits and is not a path.
+- **A flaky pass no longer gets through the merge gate unseen.** At `merge` and `land`, a pass on the rerun counts only if this test command has flaked before. The first flake ever seen at a merge fails it (`FLAKY AT MERGE`, exit 4), main is reset, and the ticket keeps its state; once on record, a retried land passes. A batch land stops instead of falling back to one-at-a-time, which would pass on the now-recorded flake. A ticket's own `test` keeps the old behaviour. `merge_flaky: "pass"` in config turns the gate check off.
+- **A failing run is not repeated when it took over `flaky_retry_max_seconds`** (default 900), so a genuine failure in a long suite costs one run, not two.
+- **Decision scoping.** A Decisions row binds every ticket only when its Binds cell is exactly a word like `all`, `project` or `everyone`. In dev.1, `all P2 tickets` and `project settings UI` bound every ticket in every phase.
+- **`revert` updates the roadmap**: the ticket goes back to `todo` with a `Claude:` note and the roadmap is committed. A ticket you marked `done` keeps its status and gets the note.
+
+### Fixed
+- **A check that writes files no longer stalls the sprint.** A formatter run with `--write`, a build that regenerates a tracked file, or a test that writes into the repo used to leave main dirty after a passing merge, and every later merge then refused to run. `merge` and `land` now fail with `CHECKS MODIFIED FILES` (exit 7) when a check rewrote a tracked file: they name the files and reset main, and the ticket keeps its state. New untracked files a check leaves behind (a cache folder, build output) cannot change what is committed, so they are removed with a note and the merge goes on. A ticket's own `test` warns about rewritten files and does not cache that pass.
+- Binary key stores (`.p12`, `.pfx`, `.jks`, `.keystore`) were never caught: git prints no `+++` line for a binary file. The scan now reads the binary-file header too.
+
 ## [1.3.0-dev.1] - 2026-11-24
 
 Dev pre-release on the `dev` branch: install with `/plugin marketplace add Palatine-Labs/coniso#dev`. `main` stays on 1.2.0 until this is promoted.
@@ -133,7 +148,8 @@ First public release.
 - **Engineer specialties.** builder, tester, ui, net, level, audio, docs, batch, artisan and synth, plus forging new specialties and a lessons loop (`docs/agent-feedback/`).
 - **Stack-pack mechanism** (`init --stack <name>`) for project-specific rules, specialties, checks, review lens and proving pass. No packs ship in 1.0.0.
 
-[Unreleased]: https://github.com/Palatine-Labs/coniso/compare/v1.3.0-dev.1...HEAD
+[Unreleased]: https://github.com/Palatine-Labs/coniso/compare/v1.3.0-dev.2...HEAD
+[1.3.0-dev.2]: https://github.com/Palatine-Labs/coniso/compare/v1.3.0-dev.1...v1.3.0-dev.2
 [1.3.0-dev.1]: https://github.com/Palatine-Labs/coniso/compare/v1.2.0...v1.3.0-dev.1
 [1.2.0]: https://github.com/Palatine-Labs/coniso/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/Palatine-Labs/coniso/compare/v1.0.1...v1.1.0

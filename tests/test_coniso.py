@@ -274,6 +274,19 @@ class Memory(Repo):
             self.assertNotIn(not_want, line)
         self.assertIn("(binding)", line)
 
+    def test_scope_words_inside_a_longer_binds_cell_do_not_bind_everyone(self):
+        self.add_decisions("| 2999-01-01 · P0-09 | Use UTC | all P2 tickets |",
+                           "| 2999-01-02 · P0-09 | Icons 16px | project settings UI |",
+                           "| 2999-01-03 · P0-09 | Every role rule | every role |",
+                           "| 2999-01-04 · P0-09 | Star rule | * |")
+        self.git("add", "-A")
+        self.c("dispatch", "P1-01")
+        line = next(x for x in self.assignment("P1-01.E1").splitlines() if x.startswith("DECISIONS:"))
+        self.assertIn("Every role rule", line)
+        self.assertIn("Star rule", line)
+        self.assertNotIn("Use UTC", line)
+        self.assertNotIn("Icons 16px", line)
+
     def test_no_decisions_field_when_none_bind(self):
         self.c("dispatch", "P1-01")
         self.assertNotIn("DECISIONS:", self.assignment("P1-01.E1"))
@@ -359,6 +372,125 @@ class Pipeline(Repo):
         self.assertEqual(json.loads(rows[0])["where"], "P1-01")
         self.assertIn("Flaky test runs (failed, then passed on rerun): 1", self.c("retro"))
 
+    def flaky_cmd(self, marker):
+        # fails the first time it runs, then passes while the marker exists
+        return f'"{PY}" -c "import os,sys; f=r\'{marker}\'; n=os.path.exists(f); open(f,\'w\').close(); sys.exit(0 if n else 1)"'
+
+    def test_first_flake_at_merge_fails_it_and_a_retry_passes(self):
+        marker = self.tmp / "merge-flake"
+        self.c("init", "--test", self.flaky_cmd(marker))
+        self.build("P1-01", fname="a.txt", body="a\n")
+        head = self.git("rev-parse", "HEAD").strip()
+        out = self.c("merge", "P1-01", "--force", code=4)
+        self.assertIn("FLAKY AT MERGE P1-01: main reset", out)
+        self.assertIn("never flaked before", out)
+        self.assertEqual(self.git("rev-parse", "HEAD").strip(), head)
+        self.assertEqual(self.git("status", "--porcelain").strip(), "")
+        self.assertEqual(self.sprint()["tickets"]["P1-01"]["state"], "built")      # unchanged, so it can land again
+        rec = json.loads((self.root / ".coniso" / "flaky.jsonl").read_text(encoding="utf-8").splitlines()[-1])
+        self.assertTrue(rec["blocked"])
+        marker.unlink()                                                       # it flakes again on the retry
+        out = self.c("merge", "P1-01", "--force")
+        self.assertIn("MERGED P1-01", out)                                    # now on record: a known flake passes
+        self.assertEqual(len((self.root / ".coniso" / "flaky.jsonl").read_text(encoding="utf-8").splitlines()), 2)
+
+    def test_a_flake_seen_at_a_ticket_run_is_known_at_merge(self):
+        marker = self.tmp / "ticket-flake"
+        self.c("init", "--test", self.flaky_cmd(marker))
+        self.build("P1-01", fname="a.txt", body="a\n")
+        self.assertIn("FLAKY", self.c("test", "P1-01"))                     # a ticket run still passes on the rerun
+        marker.unlink()
+        self.assertIn("MERGED P1-01", self.c("merge", "P1-01", "--force", "--fresh"))
+
+    def test_merge_flaky_pass_config_turns_the_gate_check_off(self):
+        marker = self.tmp / "cfg-flake"
+        self.c("init", "--test", self.flaky_cmd(marker))
+        cf = self.root / ".coniso" / "config.json"
+        cf.write_text(json.dumps(dict(self.conf(), merge_flaky="pass")), encoding="utf-8")
+        self.build("P1-01", fname="a.txt", body="a\n")
+        self.assertIn("MERGED P1-01", self.c("merge", "P1-01", "--force"))
+
+    def test_a_long_failing_run_is_not_repeated(self):
+        self.c("init", "--test", f'"{PY}" -c "import time,sys; time.sleep(0.3); sys.exit(2)"')
+        cf = self.root / ".coniso" / "config.json"
+        cf.write_text(json.dumps(dict(self.conf(), flaky_retry_max_seconds=0.1)), encoding="utf-8")
+        self.build("P1-01")
+        self.c("test", "P1-01", code=1)
+        log = (self.root / ".coniso" / "reports" / "P1-01.test.log").read_text(encoding="utf-8")
+        self.assertIn("NO RERUN", log)
+        self.assertNotIn("(rerun: flaky check)", log)
+
+    def test_revert_puts_the_roadmap_ticket_back_to_todo(self):
+        self.build("P1-01", fname="feature.txt", body="new\n")
+        self.c("merge", "P1-01", "--force")
+        self.c("roadmap", "set", "P1-01", "--status", "review", "--commit")
+        out = self.c("revert", "P1-01", "--reason", "broke login")
+        self.assertIn("roadmap: P1-01 back to todo", out)
+        _, _, data = MOD.load_roadmap(self.root / "docs" / "roadmap" / "Demo-Roadmap.html")
+        rt = next(t for t in data["tickets"] if t["id"] == "P1-01")
+        self.assertEqual(rt["status"], "todo")
+        self.assertIn("reverted", rt["notes"])
+        self.assertIn("broke login", rt["notes"])
+        self.assertEqual(self.git("status", "--porcelain").strip(), "")     # the roadmap change is committed
+        self.assertIn("Revert P1-01", self.git("log", "-1", "--format=%s"))   # in the revert commit itself
+        self.assertIn("Demo-Roadmap.html", self.git("show", "--stat", "--format=", "HEAD"))
+
+    def test_revert_leaves_a_done_ticket_done_with_a_note(self):
+        self.build("P1-01", fname="feature.txt", body="new\n")
+        self.c("merge", "P1-01", "--force")
+        self.c("roadmap", "set", "P1-01", "--status", "done", "--commit")
+        out = self.c("revert", "P1-01", "--reason", "broke login")
+        self.assertIn("is marked done by you, so it stays done", out)
+        _, _, data = MOD.load_roadmap(self.root / "docs" / "roadmap" / "Demo-Roadmap.html")
+        rt = next(t for t in data["tickets"] if t["id"] == "P1-01")
+        self.assertEqual(rt["status"], "done")
+        self.assertIn("reverted", rt["notes"])
+
+    def writer(self, rel, body="formatted"):
+        # a "check" that writes to the checkout: a formatter run with --write, or a build emitting into the repo
+        (self.root / "writer.py").write_text(
+            f"import pathlib\np = pathlib.Path({rel!r})\np.write_text((p.read_text() if p.exists() else '') + {body!r} + chr(10))\n",
+            encoding="utf-8")
+        self.git("add", "-A")
+        self.git("commit", "-qm", "writer")
+        return f'"{PY}" writer.py'
+
+    def test_a_check_that_rewrites_a_tracked_file_fails_the_merge_and_leaves_main_clean(self):
+        self.c("init", "--format-check", self.writer("README.md"))
+        self.build("P1-01", fname="a.txt", body="a\n")
+        head = self.git("rev-parse", "HEAD").strip()
+        out = self.c("merge", "P1-01", "--force", code=7)
+        self.assertIn("CHECKS MODIFIED FILES P1-01: main reset", out)
+        self.assertIn("README.md", out)
+        self.assertEqual(self.git("rev-parse", "HEAD").strip(), head)
+        self.assertEqual(self.git("status", "--porcelain").strip(), "")
+        self.assertEqual(self.sprint()["tickets"]["P1-01"]["state"], "built")
+        self.c("init", "--format-check", "")                               # made check-only (here: removed)
+        self.assertIn("MERGED P1-01", self.c("merge", "P1-01", "--force"))
+
+    def test_untracked_files_a_check_creates_are_cleaned_up_and_the_merge_proceeds(self):
+        self.c("init", "--build", self.writer("build-output.txt"))          # a cache or build output, not gitignored
+        self.build("P1-01", fname="a.txt", body="a\n")
+        out = self.c("merge", "P1-01", "--force")
+        self.assertIn("MERGED P1-01", out)
+        self.assertIn("Removed 1 untracked file(s) the checks created (build-output.txt); gitignore them", out)
+        self.assertFalse((self.root / "build-output.txt").exists())
+        self.assertEqual(self.git("status", "--porcelain").strip(), "")
+        self.build("P1-02", fname="b.txt", body="b\n")                       # the next merge is not blocked
+        self.assertIn("MERGED P1-02", self.c("merge", "P1-02", "--force"))
+
+    def test_ticket_test_warns_and_does_not_cache_when_checks_rewrite_the_worktree(self):
+        self.c("init", "--format-check", self.writer("README.md"))
+        self.build("P1-01", fname="a.txt", body="a\n")
+        out = self.c("test", "P1-01")
+        self.assertIn("CHECKS MODIFIED FILES (warning): README.md", out)
+        self.assertNotIn("test_cache", self.sprint()["tickets"]["P1-01"])
+
+    def test_ticket_test_does_not_warn_about_cache_files_the_checks_add(self):
+        self.c("init", "--build", self.writer("build-output.txt"))
+        self.build("P1-01", fname="a.txt", body="a\n")
+        self.assertNotIn("CHECKS MODIFIED FILES", self.c("test", "P1-01"))
+
     def test_real_failure_still_fails_after_rerun(self):
         self.c("init", "--test", f'"{PY}" -c "import sys; sys.exit(2)"')
         self.build("P1-01")
@@ -388,11 +520,45 @@ class Pipeline(Repo):
                 "+api_key = os.environ['API_KEY']\n"            # read from env: fine
                 "+password = \"<your password here>\"\n"        # placeholder: fine
                 "+db = 'postgres://app:hunter2secret@db.local/x'\n"
-                "+token: \"" + "x" * 20 + "\"\n"
+                "+token: \"" + "x" * 12 + "12345678\"\n"
                 "+++ b/fixtures/keys.py\n@@ -0,0 +1 @@\n+k = 'AKIA" + "Q" * 16 + "'\n")
-        kinds = [(f, n, k) for f, n, k in MOD.scan_secrets(diff, conf)]
-        self.assertEqual(kinds, [("app.py", 1, "GitHub token"), ("app.py", 4, "connection string with password"),
-                                 ("app.py", 5, "assigned secret")])
+        block, hints = MOD.scan_secrets(diff, conf)
+        self.assertEqual(block, [("app.py", 1, "GitHub token")])
+        self.assertEqual(hints, [("app.py", 4, "connection string with password"), ("app.py", 5, "assigned secret")])
+
+    def test_ordinary_code_never_blocks(self):
+        lines = {
+            "src/auth.py": 'TOKEN_TYPE = "authorization_code_grant"',
+            "src/mail.py": 'password_reset_template = "emails/password_reset.html"',
+            "src/settings.ts": 'export const SECRET_HEADER_NAME = "X-Internal-Request-Signature"',
+            "docker-compose.yml": "DATABASE_URL: postgres://app:devpassword@db:5432/app",
+            "tests/test_auth.py": 'api_key = "test-api-key-not-real-123456"',
+            "certs/ca-public.pem": "-----BEGIN CERTIFICATE-----",
+        }
+        for path, line in lines.items():
+            block, hints = MOD.scan_secrets(f"+++ b/{path}\n@@ -0,0 +1 @@\n+{line}\n", {})
+            self.assertEqual(block, [], path)
+        for path in ("src/auth.py", "src/mail.py", "src/settings.ts"):      # identifiers and paths are not even hints
+            self.assertEqual(MOD.scan_secrets(f"+++ b/{path}\n@@ -0,0 +1 @@\n+{lines[path]}\n", {})[1], [], path)
+        block, _ = MOD.scan_secrets("+++ b/k.pem\n@@ -0,0 +1 @@\n+-----BEGIN RSA PRIVATE KEY-----\n", {})
+        self.assertEqual(block, [("k.pem", 1, "private key")])          # a private key inside a .pem still blocks
+
+    def test_binary_key_store_blocks_and_hints_do_not(self):
+        self.build("P1-01", fname="client.p12", body="x")
+        (self.wt("P1-01") / "client.p12").write_bytes(b"\x00\x01binary-keystore\x00\xff")
+        self.assertIn("client.p12 (secret-looking file)", self.c("test", "P1-01", code=1))
+        (self.wt("P1-01") / "client.p12").unlink()
+        (self.wt("P1-01") / "ca.pem").write_text("-----BEGIN CERTIFICATE-----\nMIIB\n", encoding="utf-8")
+        (self.wt("P1-01") / "db.yml").write_text("url: postgres://app:devpassword@db:5432/app\n", encoding="utf-8")
+        out = self.c("test", "P1-01")
+        self.assertIn("PASS", out)
+        self.assertIn("SECRET HINTS (not blocking): ", out)
+        self.assertIn("db.yml:1 connection string with password", out)
+        self.assertIn("ca.pem (certificate or key file)", out)
+        self.assertEqual(self.sprint()["tickets"]["P1-01"]["secret_hints"], 2)
+        self.assertIn("MERGED P1-01", self.c("merge", "P1-01", "--force"))
+        notes = " ".join(h["note"] for h in self.sprint()["tickets"]["P1-01"]["history"])
+        self.assertIn("secret hints at merge (not blocking)", notes)
 
     def test_merge_blocks_secrets_and_leaves_main_untouched(self):
         self.build("P1-01", fname="cfg.py", body='STRIPE = "sk_live_' + "z" * 24 + '"\n')
@@ -1064,6 +1230,40 @@ class BatchLand(Repo):
         out = self.c("land", "P1-01", "P1-02", "--each")
         self.assertNotIn("BATCH", out)
         self.assertEqual(out.count("MERGED"), 2)
+
+    def test_first_flake_on_a_batch_stops_instead_of_falling_back(self):
+        marker = self.tmp / "batch-flake"
+        self.sh(PY, str(SCRIPT), "init", "--test",
+                f'"{PY}" -c "import os,sys; f=r\'{marker}\'; n=os.path.exists(f); open(f,\'w\').close(); sys.exit(0 if n else 1)"')
+        self.pass_ticket("P1-01", "a.txt")
+        self.pass_ticket("P1-02", "b.txt")
+        head = self.git("rev-parse", "HEAD").strip()
+        out = self.c("land", "P1-01", "P1-02", code=4)
+        self.assertIn("BATCH RESET: FLAKY AT MERGE on the combined result", out)
+        self.assertNotIn("Merging one by one", out)
+        self.assertEqual(self.git("rev-parse", "HEAD").strip(), head)
+        s = self.sprint()
+        self.assertEqual({s["tickets"][x]["state"] for x in ("P1-01", "P1-02")}, {"passed"})
+        marker.unlink()
+        out = self.c("land", "P1-01", "P1-02")                                # on record now: the retry lands
+        self.assertIn("BATCH 2 tickets", out)
+
+    def test_a_batch_whose_checks_write_files_stops_and_leaves_main_clean(self):
+        (self.root / "writer.py").write_text("import pathlib\np = pathlib.Path('README.md')\np.write_text(p.read_text() + 'x' + chr(10))\n",
+                                             encoding="utf-8")
+        self.git("add", "-A")
+        self.git("commit", "-qm", "writer")
+        self.sh(PY, str(SCRIPT), "init", "--format-check", f'"{PY}" writer.py')
+        self.pass_ticket("P1-01", "a.txt")
+        self.pass_ticket("P1-02", "b.txt")
+        head = self.git("rev-parse", "HEAD").strip()
+        out = self.c("land", "P1-01", "P1-02", code=7)
+        self.assertIn("BATCH RESET: CHECKS MODIFIED FILES on the combined result: README.md", out)
+        self.assertNotIn("Merging one by one", out)
+        self.assertEqual(self.git("rev-parse", "HEAD").strip(), head)
+        self.assertEqual(self.git("status", "--porcelain").strip(), "")
+        s = self.sprint()
+        self.assertEqual({s["tickets"][x]["state"] for x in ("P1-01", "P1-02")}, {"passed"})
 
     def test_failing_batch_falls_back_to_one_at_a_time(self):
         (self.root / "check.py").write_text("import os, sys\nsys.exit(1 if os.path.exists('a.txt') and os.path.exists('b.txt') else 0)\n",

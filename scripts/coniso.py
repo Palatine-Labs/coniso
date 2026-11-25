@@ -19,7 +19,7 @@ import tempfile
 import time
 from pathlib import Path
 
-VERSION = "1.3.0-dev.1"
+VERSION = "1.3.0-dev.2"
 STATES = ["queued", "building", "built", "reviewing", "passed", "failed",
           "conflict", "merged", "blocked", "dropped"]
 ACTIVE = {"building", "built", "reviewing", "passed", "failed", "conflict"}
@@ -172,6 +172,44 @@ def main_dirty(ignore=()):
             continue
         keep.append(ln)
     return keep
+
+
+def check_side_effects():
+    """(path, untracked) for every file the checks changed in the main checkout after a squash: tracked files that
+    now differ from the index, and new files .gitignore does not cover. Merges start from a clean checkout, so
+    anything here was written by a check (a formatter run with --write, a build that regenerates a tracked file,
+    a test that writes into the repo, a cache folder). Only the tracked ones change what would be committed."""
+    out = []
+    for ln in git(["status", "--porcelain", "--untracked-files=all"], ROOT, check=False).stdout.splitlines():
+        if len(ln) < 4:
+            continue
+        path = ln[3:].strip().strip('"')
+        path = path.split(" -> ")[-1]
+        if ln.startswith("??"):
+            out.append((path, True))
+        elif ln[1] != " ":
+            out.append((path, False))
+    return out
+
+
+def undo_side_effects(files):
+    """Delete the untracked files a check created; `reset --hard` restores the tracked ones."""
+    for path, untracked in files:
+        if untracked:
+            try:
+                (ROOT / path).unlink()
+            except OSError:
+                pass
+
+
+SIDE_EFFECTS = "CHECKS MODIFIED FILES"
+
+
+def side_effect_text(files):
+    names = ", ".join(x for x, _ in files[:5]) + (f" +{len(files) - 5} more" if len(files) > 5 else "")
+    return (f"{names}. A check rewrote tracked files, so what passed is not what would be committed. Make format and "
+            "lint check-only (`prettier --check`, not `--write`), commit generated files in the ticket, or fix a test "
+            "that writes into the repo. Then land again.")
 
 
 def current_branch():
@@ -1047,7 +1085,10 @@ def cmd_memory(a):
 
 
 DECISIONS_INLINE_MAX = 8
-BINDS_EVERYONE = ("all", "every", "everything", "*", "project")
+# A Binds cell that is exactly one of these binds every ticket. "all P2 tickets" or "project settings UI" does not:
+# those are matched by the ticket ids and phases they name.
+BINDS_EVERYONE = ("all", "every", "everything", "everyone", "*", "project", "whole project", "all tickets",
+                  "every ticket", "all roles", "every role", "all agents", "every agent")
 
 
 def ticket_decisions(pairs):
@@ -1063,8 +1104,8 @@ def ticket_decisions(pairs):
             continue
         cells = [x.strip() for x in row.strip().strip("|").split("|")]
         binds = cells[2] if len(cells) > 2 else ""
-        words = {w.strip(".,;:()").lower() for w in re.split(r"[\s,;/]+", binds) if w}
-        if words & set(BINDS_EVERYONE) or any(
+        whole = " ".join(re.findall(r"[\w*]+", binds.lower()))
+        if whole in BINDS_EVERYONE or any(
                 re.search(r"(?<![\w-])" + re.escape(k) + r"(?![\w-])", binds, re.I) for k in keys):
             out.append(cells)
     return out
@@ -1439,27 +1480,65 @@ def cmd_diff(a):
 CHECK_KEYS = ("format_cmd", "lint_cmd", "typecheck_cmd", "build_cmd", "test_cmd", "stack_check_cmd")   # cheap first
 
 
-def run_checks(target, conf, log, label=None):
+FLAKY_AT_MERGE = "FLAKY AT MERGE"
+
+
+def flaky_records():
+    f = L / "flaky.jsonl"
+    if not f.exists():
+        return []
+    out = []
+    for x in f.read_text(encoding="utf-8").splitlines():
+        try:
+            out.append(json.loads(x))
+        except ValueError:
+            continue
+    return out
+
+
+def run_checks(target, conf, log, label=None, gate=False):
     """Run the configured checks in order, stopping at the first failure. A failing test command is rerun once
-    (unless retry_flaky is off): a pass on the rerun counts as a pass and is recorded in .coniso/flaky.jsonl."""
+    (unless retry_flaky is off, or the failing run took longer than flaky_retry_max_seconds), and the event is
+    recorded in .coniso/flaky.jsonl.
+    - At a ticket's own run, a pass on the rerun counts as a pass; the reviewer sees FLAKY and rules on it.
+    - At the merge gate (gate=True), it counts only if this test command has flaked before. A race the ticket just
+      introduced looks exactly like a flaky test, so the first flake ever seen at a merge fails it (FLAKY AT MERGE).
+      It is on record afterwards, so a merge retried after a look passes. Config merge_flaky "pass" turns this off."""
     cmds = [(k, conf[k]) for k in CHECK_KEYS if conf.get(k)]
     if not any(k in ("build_cmd", "test_cmd", "stack_check_cmd") for k, _ in cmds):
         return None, "no build/test command configured"
     text = []
     code = 0
     for key, cmd in cmds:
+        t0 = time.monotonic()
         r = run(cmd, cwd=target, shell=True, timeout=conf.get("test_timeout", 1200))
+        took = time.monotonic() - t0
         text.append(f"$ {cmd}\n{r.stdout or ''}{r.stderr or ''}\n[exit {r.returncode}]\n")
         code = r.returncode
-        if code != 0 and key == "test_cmd" and conf.get("retry_flaky", True):
+        cap = conf.get("flaky_retry_max_seconds", 900)
+        if code != 0 and key == "test_cmd" and conf.get("retry_flaky", True) and cap and took > cap:
+            text.append(f"NO RERUN: the failing run took {int(took)}s, over flaky_retry_max_seconds ({cap}); "
+                        "a real failure is not run twice\n")
+        elif code != 0 and key == "test_cmd" and conf.get("retry_flaky", True):
+            known = any(x.get("cmd") == cmd for x in flaky_records())
             r2 = run(cmd, cwd=target, shell=True, timeout=conf.get("test_timeout", 1200))
             text.append(f"$ {cmd}   (rerun: flaky check)\n{r2.stdout or ''}{r2.stderr or ''}\n[exit {r2.returncode}]\n")
             if r2.returncode == 0:
-                text.append(f"FLAKY: `{cmd}` failed (exit {code}) then passed on rerun; recorded in .coniso/flaky.jsonl\n")
+                rec = {"ts": now_z(), "where": label or p(target), "cmd": cmd, "first_exit": code, "log": p(log)}
+                if gate and not known and conf.get("merge_flaky", "known") != "pass":
+                    rec["blocked"] = True
+                    text.append(f"{FLAKY_AT_MERGE}: `{cmd}` failed (exit {code}), then passed on rerun. This test command "
+                                "has never flaked before, so the merge fails: a race the ticket just introduced looks "
+                                "exactly like a flaky test. If the failing test above is unrelated to the ticket, land it "
+                                "again (the flake is now on record and passes); if it covers the ticket's code, send it "
+                                "to the builder.\n")
+                else:
+                    text.append(f"FLAKY: `{cmd}` failed (exit {code}) then passed on rerun; recorded in .coniso/flaky.jsonl\n")
+                    code = 0
                 with (L / "flaky.jsonl").open("a", encoding="utf-8") as fh:
-                    fh.write(json.dumps({"ts": now_z(), "where": label or p(target), "cmd": cmd,
-                                         "first_exit": code, "log": p(log)}) + "\n")
-            code = r2.returncode
+                    fh.write(json.dumps(rec) + "\n")
+            else:
+                code = r2.returncode
         if code != 0:
             text.append(f"CHECK FAILED: {key[:-4]}\n")
             break
@@ -1467,8 +1546,9 @@ def run_checks(target, conf, log, label=None):
     return code, "\n".join(text)
 
 
+# Blocking rules: formats that are a credential by their shape alone, so a hit is almost never a false alarm.
 SECRET_PATTERNS = [
-    ("private key", r"-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY"),
+    ("private key", r"-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY"),
     ("AWS access key", r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"),
     ("GitHub token", r"\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{60,})\b"),
     ("Slack token", r"\bxox[abposr]-[A-Za-z0-9-]{10,}"),
@@ -1476,28 +1556,54 @@ SECRET_PATTERNS = [
     ("Google API key", r"\bAIza[0-9A-Za-z_-]{35}\b"),
     ("Anthropic key", r"\bsk-ant-[A-Za-z0-9_-]{20,}"),
     ("OpenAI-style key", r"\bsk-(?:proj-)?[A-Za-z0-9]{32,}\b"),
-    ("JWT", r"\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"),
     ("Supabase service key", r"(?i)service_role[\"']?\s*[:=]\s*[\"'][A-Za-z0-9._-]{30,}"),
+]
+# Hints: shapes that are often a credential and often not (sample JWTs, local dev URLs, token-ish names). They never
+# block; `test` prints them and the reviewer rules on each one.
+SECRET_HINTS = [
+    ("JWT", r"\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"),
     ("assigned secret", r"(?i)\b[\w-]*(?:api[_-]?key|secret|passw(?:or)?d|token)[\w-]*[\"']?\s*[:=]\s*"
-                        r"[\"'][^\"'\s$<{]{16,}[\"']"),
+                        r"[\"'](?P<v>[^\"'\s$<{]{16,})[\"']"),
     ("connection string with password", r"\b[a-z][a-z0-9+]*://[^/\s:@]+:[^@\s/]{6,}@[\w.-]+"),
 ]
-SECRET_FILES = r"(?:^|/)(?:\.env(?:\.[\w.-]+)?|id_[rd]sa|id_ed25519|[\w.-]*\.pem|[\w.-]*\.p12|[\w.-]*\.pfx|credentials\.json|service-account[\w.-]*\.json)$"
+# Files that hold credentials by convention. Key stores are binary, so they are caught from the diff's file header.
+SECRET_FILES = (r"(?:^|/)(?:\.env(?:\.[\w.-]+)?|id_(?:rsa|dsa|ecdsa|ed25519)|[\w.-]*\.(?:p12|pfx|jks|keystore)"
+                r"|credentials\.json|service-account[\w.-]*\.json)$")
 SECRET_FILES_OK = r"(?:^|/)\.env\.(?:example|sample|template|dist)$"
+SECRET_FILE_HINTS = r"(?:^|/)[\w.-]*\.(?:pem|key|crt)$"    # usually a public certificate; a private key inside still blocks
 ALLOW_MARK = "coniso:allow-secret"
 
 
+def looks_random(value):
+    """A token-like value: letters and digits mixed, not a path, URL or plain identifier."""
+    return bool(re.search(r"[A-Za-z]", value) and re.search(r"\d", value) and "/" not in value and " " not in value)
+
+
 def scan_secrets(diff_text, conf):
-    """Findings (file, line no, kind) in the added lines of a unified diff, plus added secret-looking files.
-    A line containing `coniso:allow-secret`, or a path matching config secret_allow (regexes), is skipped."""
+    """(blocking, hints) in a unified diff: each a list of (file, line no, kind); line 0 means the whole file.
+    Added lines are checked against SECRET_PATTERNS (blocking) and SECRET_HINTS; added files by name, binary ones
+    included. A line containing `coniso:allow-secret`, or a path matching config secret_allow (regexes), is skipped."""
     allow = [re.compile(x) for x in conf.get("secret_allow", [])]
-    found, f, n = [], None, 0
+    block, hints, f, n = [], [], None, 0
+
+    def check_file(path):
+        if not path or path == "/dev/null" or any(a.search(path) for a in allow):
+            return
+        if re.search(SECRET_FILES, path) and not re.search(SECRET_FILES_OK, path):
+            block.append((path, 0, "secret-looking file"))
+        elif re.search(SECRET_FILE_HINTS, path):
+            hints.append((path, 0, "certificate or key file"))
+
     for ln in diff_text.splitlines():
         if ln.startswith("+++ "):
-            f = ln[4:].strip()
+            f = ln[4:].strip().strip('"')
             f = f[2:] if f.startswith("b/") else (None if f == "/dev/null" else f)
-            if f and re.search(SECRET_FILES, f) and not re.search(SECRET_FILES_OK, f) and not any(a.search(f) for a in allow):
-                found.append((f, 0, "secret-looking file"))
+            check_file(f)
+            continue
+        m = re.match(r"^Binary files .* and (.+) differ$", ln)
+        if m:
+            path = m.group(1).strip().strip('"')
+            check_file(path[2:] if path.startswith("b/") else path)
             continue
         m = re.match(r"^@@ -\d+(?:,\d+)? \+(\d+)", ln)
         if m:
@@ -1507,20 +1613,34 @@ def scan_secrets(diff_text, conf):
             n += 1
             if ALLOW_MARK in ln or any(a.search(f) for a in allow):
                 continue
-            for kind, rx in SECRET_PATTERNS:
-                if re.search(rx, ln[1:]):
-                    found.append((f, n, kind))
+            hit = next((kind for kind, rx in SECRET_PATTERNS if re.search(rx, ln[1:])), None)
+            if hit:
+                block.append((f, n, hit))
+                continue
+            for kind, rx in SECRET_HINTS:
+                mm = re.search(rx, ln[1:])
+                if mm and (kind != "assigned secret" or looks_random(mm.group("v"))):
+                    hints.append((f, n, kind))
                     break
         elif not ln.startswith("-"):
             n += 1
-    return found
+    return block, hints
+
+
+def findings_text(found):
+    return "; ".join(f"{f}:{n} {k}" if n else f"{f} ({k})" for f, n, k in found[:10]) \
+        + (f"; +{len(found) - 10} more" if len(found) > 10 else "")
 
 
 def secret_report(found):
-    return ("SECRETS: " + "; ".join(f"{f}:{n} {k}" if n else f"{f} ({k})" for f, n, k in found[:10])
-            + (f"; +{len(found) - 10} more" if len(found) > 10 else "")
+    return ("SECRETS: " + findings_text(found)
             + f". Move them to untracked config or env vars. A deliberate fake (a test fixture) gets `{ALLOW_MARK}` "
               "on its line, or its path in config secret_allow.")
+
+
+def hint_report(hints):
+    return ("SECRET HINTS (not blocking): " + findings_text(hints)
+            + ". Each looks like it could be a credential. The reviewer rules on each one; a real credential is a blocker.")
 
 
 TEST_PATH = r"(?:^|/)(?:tests?|__tests__|specs?|testing)/|(?:^|/)test_[^/]*$|[._-](?:test|spec|tests)\.[\w]+$|_test\.\w+$|Tests?\.\w+$"
@@ -1585,11 +1705,18 @@ def cmd_test(a):
         target = Path(t["wt"]) if t.get("wt") else ROOT
     log = L / "reports" / f"{safe(a.id)}.test.log"
     if t is not None and t.get("wt") and t.get("base"):
-        found = scan_secrets(ticket_diff(t, conf), conf)
+        found, hints = scan_secrets(ticket_diff(t, conf), conf)
         if found:
             print(f"TEST {a.id}: FAIL (secret scan) · nothing else ran")
             print(secret_report(found))
             sys.exit(1)
+        if len(hints) != (t.get("secret_hints") or 0):
+            with Lock():
+                c = load_sprint()
+                ticket(c, a.id)["secret_hints"] = len(hints)
+                save_sprint(c)
+        if hints:
+            print(hint_report(hints))
         warn = test_change_warning(ticket_diff(t, conf, names=True))
         if bool(warn) != bool(t.get("tests_unchanged")):
             with Lock():
@@ -1608,6 +1735,15 @@ def cmd_test(a):
     if code is None:
         print(f"TEST {a.id}: SKIPPED — {text}")
         sys.exit(2)
+    if tree:
+        after = tree_id(target, conf)
+        if after and after != tree:
+            changed = git(["diff", "--name-only", "--diff-filter=MD", tree, after], target, check=False).stdout.split()
+            if changed:
+                print(f"{SIDE_EFFECTS} (warning): {', '.join(changed[:5])}{' …' if len(changed) > 5 else ''} changed "
+                      "while the checks ran. Review the change; at merge it fails the land. Make format and lint "
+                      "check-only, or fix the test that writes files.")
+            tree = None     # the pass does not cover the tree as it is now: do not reuse it
     if tree and code == 0:
         with Lock():
             c = load_sprint()
@@ -1715,7 +1851,12 @@ def cmd_merge(a):
         git(["reset", "--hard", "-q", "HEAD"], ROOT, check=False)
         mark("failed", "squash produced no net changes")
         die(f"{a.id}: no net changes after squash", code=4)
-    found = scan_secrets(git(["diff", "--cached", "-U0"], ROOT, check=False).stdout, conf)
+    found, hints = scan_secrets(git(["diff", "--cached", "-U0"], ROOT, check=False).stdout, conf)
+    if hints:
+        with Lock():
+            c2 = load_sprint()
+            note(ticket(c2, a.id), c2["tickets"][a.id]["state"], "secret hints at merge (not blocking): " + findings_text(hints))
+            save_sprint(c2)
     if found and not getattr(a, "allow_secrets", False):
         git(["reset", "--hard", "-q", "HEAD"], ROOT, check=False)
         mark("failed", f"secret scan: {len(found)} finding(s)")
@@ -1731,7 +1872,35 @@ def cmd_merge(a):
         if hit:     # the squash produced exactly the tree the ticket's last passing `test` ran on
             checks = f"PASS (cached: tree {tree[:7]} already tested at {hit['ts']}, log {hit['log']})"
         else:
-            code, text = run_checks(ROOT, conf, log, label=f"merge {a.id}")
+            code, text = run_checks(ROOT, conf, log, label=f"merge {a.id}", gate=True)
+            side = check_side_effects()
+            created = [x for x in side if x[1]]
+            side = [x for x in side if not x[1]]
+            undo_side_effects(created)     # new untracked files cannot change what is committed, only dirty main
+            if created:
+                print(f"Removed {len(created)} untracked file(s) the checks created "
+                      f"({', '.join(x for x, _ in created[:3])}{' …' if len(created) > 3 else ''}); gitignore them")
+            if side:
+                git(["reset", "--hard", "-q", "HEAD"], ROOT, check=False)
+                with Lock():
+                    c2 = load_sprint()
+                    note(ticket(c2, a.id), c2["tickets"][a.id]["state"],
+                         f"{SIDE_EFFECTS.lower()}: {', '.join(x for x, _ in side[:5])}")
+                    save_sprint(c2)
+                print(f"{SIDE_EFFECTS} {a.id}: main reset, nothing committed; the ticket keeps its state · log {p(log)}")
+                print(side_effect_text(side))
+                if code not in (None, 0):
+                    print("The checks also failed:\n" + "\n".join(text.strip().splitlines()[-12:]))
+                sys.exit(7)
+            if code not in (None, 0) and FLAKY_AT_MERGE in text:
+                git(["reset", "--hard", "-q", "HEAD"], ROOT, check=False)
+                with Lock():
+                    c2 = load_sprint()
+                    note(ticket(c2, a.id), c2["tickets"][a.id]["state"], f"{FLAKY_AT_MERGE.lower()}; log {p(log)}")
+                    save_sprint(c2)
+                print(f"{FLAKY_AT_MERGE} {a.id}: main reset, nothing committed; the ticket keeps its state · log {p(log)}")
+                print("\n".join(text.strip().splitlines()[-20:]))
+                sys.exit(4)
             if code not in (None, 0):
                 git(["reset", "--hard", "-q", "HEAD"], ROOT, check=False)
                 mark("failed", f"integration checks failed on {c.get('branch')} after squash; log {p(log)}")
@@ -1780,6 +1949,9 @@ def cmd_revert(a):
             git(["revert", "--abort"], ROOT, check=False)
             git(["reset", "--hard", "-q", "HEAD"], ROOT, check=False)
             die(f"revert of {sha[:7]} conflicts with later work: {(r.stderr or r.stdout).strip()[:200]}", code=3)
+        road_msg, road_rel = revert_roadmap(conf, c, a.id, sha, a.reason.strip())
+        if road_rel:
+            git(["add", "--", road_rel], ROOT, check=False)     # one commit: the code revert and the roadmap note
         r = git(git_identity_args(ROOT) + ["commit", "-q", "-m", f"Revert {a.id}: {t['title']}",
                                            "-m", f"Reason: {a.reason.strip()}", "-m", f"Reverts {sha}. Coniso sprint {c['name']}"],
                 ROOT, check=False)
@@ -1792,6 +1964,7 @@ def cmd_revert(a):
                 cmd_wt(argparse.Namespace(action="remove", id=a.id, force=True))
     else:
         rsha = None
+        road_msg, _ = revert_roadmap(conf, c, a.id, sha, a.reason.strip())
     with Lock():
         c = load_sprint()
         t = ticket(c, a.id)
@@ -1806,8 +1979,36 @@ def cmd_revert(a):
         save_sprint(c)
     print(f"REVERTED {a.id}: {sha[:7]} undone" + (f" by {rsha[:7]}" if rsha else " (in-place mode: undo the files by hand)")
           + f" · ticket back to queued (attempt {t['attempts'] + 1})")
+    if road_msg:
+        print(road_msg)
     print(f"Run `test main`. Before re-dispatching, put the reason in the packet or a fix list, and consider "
           f"`lesson <specialty> \"<rule>\" --source {a.id}` so it does not happen again.")
+
+
+def revert_roadmap(conf, c, tid, sha, reason):
+    """Put a reverted roadmap ticket back to todo with a Claude: note; the caller commits it with the revert.
+    A ticket the user marked done keeps its status: it gets the note, and the user is told.
+    Returns (message or None, the roadmap's repo-relative path when written, else None)."""
+    t = c["tickets"].get(tid) or {}
+    rp = ROOT / conf["roadmap"] if conf.get("roadmap") else None
+    if t.get("adhoc") or not rp or not rp.exists():
+        return None, None
+    html, m, data = load_roadmap(rp)
+    rt = next((x for x in data.get("tickets", []) if x.get("id") == tid), None)
+    if rt is None:
+        return None, None
+    n = (f"Claude: Coniso sprint {c['name']} reverted {sha[:7]} ({dt.date.today().isoformat()}): {reason}. "
+         "Back in the sprint queue.")
+    done = rt.get("status") == "done"
+    if not done:
+        rt["status"] = "todo"
+    rt["notes"] = ((rt.get("notes") or "").rstrip() + "\n" + n).strip()
+    rt["updated"] = now_z()
+    if validate_roadmap(data):
+        return f"WARN: roadmap fails validation; {tid} not updated there (run `roadmap validate`)", None
+    save_roadmap_data(rp, html, m, data, log_text=f"Coniso: reverted {tid}: {reason}"[:200], quiet=True)
+    return (f"roadmap: {tid} " + ("is marked done by you, so it stays done, with a revert note: set it back if the revert stands"
+                                  if done else "back to todo, with a revert note")), rp.relative_to(ROOT).as_posix()
 
 
 def cmd_ledger(a):
@@ -3037,7 +3238,7 @@ def land_batch(order, conf, branch):
     where it started and the tickets back to passed, so the caller merges and tests them one at a time and finds
     the culprit. Returns True when the batch landed."""
     start = git(["rev-parse", "HEAD"], ROOT).stdout.strip()
-    touched, problem = [], None
+    touched, problem, side = [], None, []
     for tid in order:
         touched.append(tid)
         r = redirect_out()
@@ -3050,8 +3251,14 @@ def land_batch(order, conf, branch):
             break
     if problem is None:
         log = L / "reports" / f"land-{safe(order[0])}+{len(order) - 1}.merge-test.log"
-        code, text = run_checks(ROOT, conf, log)
-        if code in (None, 0):
+        code, text = run_checks(ROOT, conf, log, label=f"land {'+'.join(order)}", gate=True)
+        side = check_side_effects()
+        created = [x for x in side if x[1]]
+        undo_side_effects(created)
+        if created:
+            print(f"Removed {len(created)} untracked file(s) the checks created; gitignore them")
+        side = [x for x in side if not x[1]]
+        if code in (None, 0) and not side:
             for tid in order:
                 with redirect_out():
                     cmd_wt(argparse.Namespace(action="remove", id=tid, force=True))
@@ -3063,18 +3270,28 @@ def land_batch(order, conf, branch):
             ready = next_ready(c)
             if ready:
                 print(f"Now ready: {', '.join(ready)}")
-            return True
-        problem = f"integration checks failed on the combined result (exit {code}) · log {p(log)}"
+            return "landed"
+        if side:
+            problem = f"{SIDE_EFFECTS} on the combined result: {side_effect_text(side)} · log {p(log)}"
+        elif FLAKY_AT_MERGE in text:
+            problem = f"{FLAKY_AT_MERGE} on the combined result · log {p(log)}"
+        else:
+            problem = f"integration checks failed on the combined result (exit {code}) · log {p(log)}"
     git(["reset", "--hard", "-q", start], ROOT, check=False)
     with Lock():
         c = load_sprint()
         for tid in touched:
             t = c["tickets"][tid]
             t["state"], t["merged_sha"] = "passed", None
-            note(t, "passed", "batch land reset; merging one by one")
+            note(t, "passed", "batch land reset" + ("" if problem.startswith((FLAKY_AT_MERGE, SIDE_EFFECTS)) else "; merging one by one"))
         save_sprint(c)
     print(f"BATCH RESET: {problem} · {branch} back at {start[:7]}")
-    return False
+    if problem.startswith(SIDE_EFFECTS):       # every ticket would hit it again one at a time: stop for the fix
+        return "stop7"
+    if problem.startswith(FLAKY_AT_MERGE):     # one at a time would pass on the now-recorded flake: stop for a look
+        print("\n".join(text.strip().splitlines()[-20:]))
+        return "stop"
+    return "fallback"
 
 
 def cmd_land(a):
@@ -3090,7 +3307,12 @@ def cmd_land(a):
             note(ticket(c2, order[0]), c2["tickets"][order[0]]["state"], "reviewer tokens", a.tokens, a.role or "reviewer")
             save_sprint(c2)
     if len(order) > 1 and not a.each and conf.get("worktrees", True):
-        if not land_batch(order, conf, c.get("branch")):
+        res = land_batch(order, conf, c.get("branch"))
+        if res == "stop":
+            sys.exit(4)
+        if res == "stop7":
+            sys.exit(7)
+        if res == "fallback":
             print("Merging one by one to find the culprit.")
     for tid in order:
         if load_sprint()["tickets"][tid]["state"] == "merged":

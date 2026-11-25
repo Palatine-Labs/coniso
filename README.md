@@ -71,7 +71,7 @@ claude plugin install coniso@coniso
 /plugin install coniso@coniso
 ```
 
-Pin a single pre-release with its tag instead, e.g. `Palatine-Labs/coniso#v1.3.0-dev.1`. Run `init` again in each project after updating so `.coniso/` picks up the new script and references.
+Pin a single pre-release with its tag instead, e.g. `Palatine-Labs/coniso#v1.3.0-dev.2`. Run `init` again in each project after updating so `.coniso/` picks up the new script and references.
 
 Install it from one source only. A copy added from Anthropic's directory on claude.ai appears in Claude Code as `coniso@synced`; if you also install `coniso@coniso`, disable one of them.
 
