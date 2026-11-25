@@ -255,6 +255,64 @@ class Memory(Repo):
         self.assertIn("floats", self.c("decisions", "--all"))
         self.assertIn("no matching decisions", self.c("decisions", "--grep", "nothing-like-this"))
 
+    def assignment(self, unit):
+        return (self.root / ".coniso" / "assignments" / f"{unit}.md").read_text(encoding="utf-8")
+
+    def test_dispatch_inlines_only_the_decisions_that_bind_the_ticket(self):
+        self.add_decisions("| 2999-01-01 · P0-09 | Ticket rule for P1-01 | P1-01 |",
+                           "| 2999-01-02 · P0-09 | Phase rule | P1 |",
+                           "| 2999-01-03 · P0-09 | Project rule | all |",
+                           "| 2999-01-04 · P0-09 | Other ticket rule | P1-02 |",
+                           "| 2999-01-05 · P0-09 | Lookalike rule | P1-011 |",
+                           "| 2999-01-06 · P0-09 | SUPERSEDED by x: dead rule | P1-01 |")
+        self.git("add", "-A")
+        self.c("dispatch", "P1-01")
+        line = next(x for x in self.assignment("P1-01.E1").splitlines() if x.startswith("DECISIONS:"))
+        for want in ("Ticket rule for P1-01", "Phase rule", "Project rule"):
+            self.assertIn(want, line)
+        for not_want in ("Other ticket rule", "Lookalike rule", "dead rule"):
+            self.assertNotIn(not_want, line)
+        self.assertIn("(binding)", line)
+
+    def test_no_decisions_field_when_none_bind(self):
+        self.c("dispatch", "P1-01")
+        self.assertNotIn("DECISIONS:", self.assignment("P1-01.E1"))
+
+    def test_reviewer_gets_the_engineers_lessons_file_and_decisions(self):
+        self.c("lesson", "ui", "Check contrast in dark mode.")
+        self.add_decisions("| 2999-01-01 · P0-09 | Use theme tokens | P1-01 |")
+        self.git("add", "-A")
+        self.git("commit", "-qm", "lesson")
+        self.c("dispatch", "P1-01", "--specialty", "ui")
+        (self.wt("P1-01") / "out.txt").write_text("hello\n", encoding="utf-8")
+        self.c("set", "P1-01", "built", "--note", "ok")
+        self.c("review", "P1-01")
+        a = self.assignment("P1-01.R1")
+        read = next(x for x in a.splitlines() if x.startswith("READ FIRST:"))
+        self.assertIn("agent-feedback/ui.md", read)
+        self.assertIn("DECISIONS: [2999-01-01 · P0-09] Use theme tokens", a)
+
+    def test_reviewer_of_a_ticket_with_no_lessons_file_reads_none(self):
+        self.build("P1-01")
+        self.c("review", "P1-01")
+        self.assertNotIn("agent-feedback", self.assignment("P1-01.R1"))
+
+    def test_memory_report_and_preflight_issues(self):
+        out = self.c("memory")
+        self.assertIn("Lessons: none yet", out)
+        self.assertIn("Issues: none", out)
+        self.c("lesson", "ui", "Stamped one.")
+        with self.fb("ui.md").open("a", encoding="utf-8") as fh:
+            fh.write("- hand-written, no stamp\n")
+        self.add_decisions("| 2999-01-01 · P1-01 | SUPERSEDED by 2999-02-01: old | all |", "| someday | undated | all |")
+        out = self.c("memory")
+        self.assertIn("Lessons: ui 2", out)
+        self.assertIn("1 lesson(s) with no date or source", out)
+        self.assertIn("1 superseded decision(s) still in the brief", out)
+        self.assertIn("1 decision row(s) with no YYYY-MM-DD stamp", out)
+        self.git("add", "-A")
+        self.assertIn("memory: 3 issue(s)", self.c("preflight", code=None))
+
     # maps
     def test_preflight_flags_old_maps_only(self):
         maps = self.root / ".coniso" / "maps"

@@ -22,7 +22,7 @@ You are a **Lead**: you run one team that builds one ticket. You plan the work, 
    - **Stack pack:** if the brief has a stack block, follow its rules for which specialty owns which kind of file.
    - **Model** per packet: haiku for fully specified mechanical work, sonnet by default, opus only for the load-bearing piece.
    - Serialise only where one packet consumes another's output: give it a later Step.
-3. Write `.coniso/assignments/<id>-plan.md` (the delegation table, with a Step per row) and one assignment file per engineer at `.coniso/assignments/<id>.E<n>.md`. Give each its absolute WORKDIR, OWNS, DONE WHEN and the ticket's acceptance numbers.
+3. Write `.coniso/assignments/<id>-plan.md` (the delegation table, with a Step per row) and one assignment file per engineer at `.coniso/assignments/<id>.E<n>.md`. Give each its absolute WORKDIR, OWNS, DONE WHEN and the ticket's acceptance numbers. Copy your own DECISIONS line, if you have one, into every engineer's file, and name the lessons file of each engineer's specialty in its READ FIRST.
 4. **Validate.** Run `CONISO validate-plan .coniso/assignments/<id>-plan.md` and fix every finding until it prints `PLAN OK`. Never send its findings to the auditor.
 5. **Audit.** Spawn `coniso:auditor` one tier below you: `haiku` if you run on sonnet, `sonnet` if you run on opus. Prompt: `AUDIT delegation .coniso/assignments/<id>-plan.md · context: .coniso/tickets/<id>.md`.
    - Answer each objection in the plan.

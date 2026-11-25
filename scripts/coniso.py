@@ -842,6 +842,10 @@ def cmd_preflight(a):
     if stale_maps:
         line("INFO", f"maps written {MAP_STALE_COMMITS}+ commits ago (re-scout or delete before trusting them): "
                      + ", ".join(stale_maps))
+    _, mem_issues = memory_report()
+    mem_issues = [x for x in mem_issues if "commits old" not in x]     # stale maps are listed above
+    if mem_issues:
+        line("INFO", f"memory: {len(mem_issues)} issue(s): " + "; ".join(mem_issues) + " (`memory` for the full report)")
     c = load_sprint(required=False)
     if c:
         live = [tid for tid, t in c["tickets"].items() if t["state"] in ACTIVE]
@@ -988,6 +992,96 @@ def cmd_decisions(a):
     print("| Stamp | Decision | Binds |  (source)")
     for s, r in rows:
         print(f"{r.rstrip()}  ({s})")
+
+
+def memory_report():
+    """(summary lines, issue lines) for the long-lived guidance: lessons, decisions, retro lessons and maps."""
+    lines, issues = [], []
+    fb = ROOT / "docs" / "agent-feedback"
+    files = sorted(f for f in fb.glob("*.md") if not f.name.endswith(RETIRED_SUFFIX)) if fb.is_dir() else []
+    if files:
+        parts = []
+        for f in files:
+            act = [x for x in f.read_text(encoding="utf-8").splitlines() if x.strip().startswith(("-", "*"))]
+            ret = f.with_name(f.stem + RETIRED_SUFFIX)
+            n_ret = len([x for x in ret.read_text(encoding="utf-8").splitlines() if x.startswith("-")]) if ret.exists() else 0
+            unstamped = [x for x in act if not re.match(r"^\s*[-*]\s*\[\d{4}-\d{2}-\d{2}", x)]
+            parts.append(f"{f.stem} {len(act)}" + (f" (+{n_ret} retired)" if n_ret else ""))
+            if len(act) > FEEDBACK_MAX:
+                issues.append(f"{f.name} has {len(act)} lessons (cap {FEEDBACK_MAX}): condense with `lesson {f.stem} --retire`")
+            if unstamped:
+                issues.append(f"{f.name}: {len(unstamped)} lesson(s) with no date or source; re-add them with `lesson` "
+                              "when next touched")
+        lines.append("Lessons: " + ", ".join(parts))
+    else:
+        lines.append("Lessons: none yet (docs/agent-feedback/)")
+    rows = decision_rows()
+    sup = [r for _, r in rows if is_superseded(r)]
+    sup_brief = [r for s, r in rows if s == "brief" and is_superseded(r)]
+    undated = [r for _, r in rows if not re.search(r"\d{4}-\d{2}-\d{2}", r.strip().strip("|").split("|")[0])]
+    lines.append(f"Decisions: {len([1 for s, r in rows if s == 'brief' and not is_superseded(r)])} in the brief, "
+                 f"{len([1 for s, r in rows if s == 'archive' and not is_superseded(r)])} archived, {len(sup)} superseded")
+    if sup_brief:
+        issues.append(f"{len(sup_brief)} superseded decision(s) still in the brief: run `brief-trim`")
+    if undated:
+        issues.append(f"{len(undated)} decision row(s) with no YYYY-MM-DD stamp: brief-trim never archives them")
+    rf = L / "RETRO.md"
+    secs = retro_sections(rf.read_text(encoding="utf-8")) if rf.exists() else []
+    with_l = [s for s in secs if section_lessons(s)]
+    lines.append(f"Retro: {len(secs)} sprint(s), {len(with_l)} with lessons")
+    if len(secs) >= 2 and not section_lessons(secs[-1]) and not section_lessons(secs[-2]):
+        issues.append("the last two retros recorded no lessons")
+    maps = [f for f in (L / "maps").glob("*.md") if f.name != Path(DECISIONS_ARCHIVE).name] if (L / "maps").is_dir() else []
+    stale = stale_map_report()
+    lines.append(f"Maps: {len(maps)}" + (f", {len(stale)} stale: {', '.join(stale)}" if stale else ""))
+    if stale:
+        issues.append(f"{len(stale)} map(s) {MAP_STALE_COMMITS}+ commits old: re-scout or delete")
+    return lines, issues
+
+
+def cmd_memory(a):
+    """Health of the long-lived guidance, for setup and phase gates."""
+    lines, issues = memory_report()
+    print("MEMORY\n" + "\n".join("  " + x for x in lines))
+    print("Issues:\n" + "\n".join("  - " + x for x in issues) if issues else "Issues: none")
+
+
+DECISIONS_INLINE_MAX = 8
+BINDS_EVERYONE = ("all", "every", "everything", "*", "project")
+
+
+def ticket_decisions(pairs):
+    """Binding decision rows whose Binds cell names one of these tickets, its phase, or everyone."""
+    keys = set()
+    for tid, t in pairs:
+        keys.add(tid)
+        if t.get("phase"):
+            keys.add(t["phase"])
+    out = []
+    for _, row in decision_rows():
+        if is_superseded(row):
+            continue
+        cells = [x.strip() for x in row.strip().strip("|").split("|")]
+        binds = cells[2] if len(cells) > 2 else ""
+        words = {w.strip(".,;:()").lower() for w in re.split(r"[\s,;/]+", binds) if w}
+        if words & set(BINDS_EVERYONE) or any(
+                re.search(r"(?<![\w-])" + re.escape(k) + r"(?![\w-])", binds, re.I) for k in keys):
+            out.append(cells)
+    return out
+
+
+def with_decisions(fields, pairs, cmd):
+    """Insert a DECISIONS field after INPUTS when decisions bind these tickets: the few rows an agent must honour,
+    inline, so it need not search the whole log."""
+    rows = ticket_decisions(pairs)
+    if not rows:
+        return fields
+    shown = "; ".join(f"[{r[0]}] {r[1] if len(r) > 1 else ''}" for r in rows[:DECISIONS_INLINE_MAX])
+    more = len(rows) - DECISIONS_INLINE_MAX
+    if more > 0:
+        shown += f"; +{more} more: `{cmd} decisions --grep {pairs[0][0]}`"
+    i = next((k for k, (name, _) in enumerate(fields) if name == "INPUTS"), len(fields) - 1)
+    return fields[:i + 1] + [("DECISIONS", shown + " (binding)")] + fields[i + 1:]
 
 
 def select_from_roadmap(a, conf, c):
@@ -2323,29 +2417,35 @@ def cmd_dispatch(a):
                 workdir = p(ROOT)
             unit, spec = f"{tid}.E1", specs.get(tid, "builder")
             read = " · ".join([p(L / "BRIEF.md"), packet] + specialty_files(spec))
-            path, how = write_assignment(unit, f"ASSIGNMENT {unit} · engineer/{spec} · model {f_['model']} · from {a.from_}", [
+            path, how = write_assignment(unit, f"ASSIGNMENT {unit} · engineer/{spec} · model {f_['model']} · from {a.from_}", with_decisions([
                 ("READ FIRST", read), ("WORKDIR", p(workdir)),
                 ("OBJECTIVE", f"Build ticket {tid} ({t['title']}) so every acceptance item is met, with evidence."),
                 ("OWNS", "** (solo: the whole ticket inside WORKDIR)"), ("INPUTS", inputs), ("BOUNDARIES", bounds),
                 ("DONE WHEN", f"{accept_range(n)} met, each with evidence (test name or file:line); `{cmd} test {tid}` passes."),
                 ("ON DONE", f"after the test passes run `{cmd} set {tid} built --note \"<one phrase>\"` (solo ticket: you record built)."),
-                ("RETURN", f"standard return + detail in {p(L / 'reports' / (unit + '.md'))}")], a.rewrite)
+                ("RETURN", f"standard return + detail in {p(L / 'reports' / (unit + '.md'))}")], [(tid, t)], cmd), a.rewrite)
             rows.append([unit, f"engineer/{spec}", f_["model"], "1", "**", f"ticket {tid}", accept_range(n)])
             spawns.append(spawn_line("coniso:engineer", f_["model"], path))
         else:
             unit = tid
             review = "review lead serves" if a.review == "lead" else "dispatch your own reviewer"
-            path, how = write_assignment(unit, f"ASSIGNMENT {unit} · lead · model {f_['lead']} · from {a.from_}", [
+            path, how = write_assignment(unit, f"ASSIGNMENT {unit} · lead · model {f_['lead']} · from {a.from_}", with_decisions([
                 ("READ FIRST", f"{p(L / 'BRIEF.md')} · {packet}"), ("WORKDIR", p(ROOT)),
                 ("OBJECTIVE", f"Deliver ticket {tid} ({t['title']}) built, tested and handed off with evidence for every acceptance item."),
                 ("OWNS", f"ticket {tid}"), ("INPUTS", inputs), ("BOUNDARIES", bounds),
                 ("DONE WHEN", f"{accept_range(n)} evidenced; `{cmd} validate-handoff {tid}` prints HANDOFF OK; state built."),
                 ("REVIEW", review), ("SLOTS", str(f_["engineers"])),
                 ("ENGINEERS", f"up to {f_['engineers']} (default engineer model {f_.get('engineer_model', 'sonnet')})"),
-                ("RETURN", f"standard return + detail in {p(L / 'reports' / (tid + '.md'))}")], a.rewrite)
+                ("RETURN", f"standard return + detail in {p(L / 'reports' / (tid + '.md'))}")], [(tid, t)], cmd), a.rewrite)
             rows.append([unit, "lead", f_["lead"], "1", f"ticket {tid}", f"ticket {tid}", accept_range(n)])
             spawns.append(spawn_line("coniso:lead", f_["lead"], path))
         used += cost(f_)
+        spec_ = specs.get(tid) if (f_["kind"] == "solo" or a.specialty) else None
+        if spec_ and t.get("spec") != spec_:     # reviewers read this specialty's lessons
+            with Lock():
+                c2 = load_sprint()
+                c2["tickets"][tid]["spec"] = spec_
+                save_sprint(c2)
         if how == "kept":
             print(f"  kept existing {path.name} (--rewrite regenerates it)")
     if len(ids) > 1 or a.plan:
@@ -2471,8 +2571,10 @@ def cmd_review(a):
                         if re.fullmatch(re.escape(safe(first)) + r"\.R\d+\.md", x.name) and x.name != rep.name]
                 inputs += f" · fix list {p(L / 'reports' / (safe(first) + '.fix.md'))}" + "".join(f" · earlier review {p(x)}" for x in prev)
             agent = rv.get("agent", "reviewer")
-            path, _ = write_assignment(unit, f"ASSIGNMENT {unit} · {agent} · model {rv['model']} · from {a.from_}", [
-                ("READ FIRST", f"{p(L / 'BRIEF.md')} · {packets}"), ("WORKDIR", p(t.get("wt") or ROOT)),
+            lessons = sorted({f for x in group if c["tickets"][x].get("spec")
+                              for f in specialty_files(c["tickets"][x]["spec"])[1:]})
+            path, _ = write_assignment(unit, f"ASSIGNMENT {unit} · {agent} · model {rv['model']} · from {a.from_}", with_decisions([
+                ("READ FIRST", " · ".join([p(L / "BRIEF.md"), packets] + lessons)), ("WORKDIR", p(t.get("wt") or ROOT)),
                 ("OBJECTIVE", f"Verify {', '.join(group)} against the acceptance items and the brief through lens {rv['lens']}, and return an evidence-backed verdict."),
                 ("OWNS", f"{p(rep)}, {p(L / 'reports' / unit)}/**, {p(fix)}"), ("LENS", rv["lens"]),
                 ("SCOPE", "delta" if delta else "full"),
@@ -2481,7 +2583,7 @@ def cmd_review(a):
                 ("BOUNDARIES", "Never edit WORKDIR files or run git; probes only under your reports folder."),
                 ("DONE WHEN", f"a verdict per formats.md in your report, with {items} each marked met or unmet with evidence. "
                               f"Then run `{cmd} verdict {','.join(group)} --report {p(rep)}` and put the line it prints in your return."),
-                ("RETURN", f"verdict return (formats.md) + detail in {p(rep)}")], True)
+                ("RETURN", f"verdict return (formats.md) + detail in {p(rep)}")], [(x, c["tickets"][x]) for x in group], cmd), True)
             rows.append([unit, f"{agent}/{rv['lens']}", rv["model"], "1",
                          f".coniso/reports/{unit}.md, .coniso/reports/{unit}/**, .coniso/reports/{fix.name}",
                          ", ".join(f"ticket {x}" for x in group), "verdict"])
@@ -3279,6 +3381,9 @@ def main():
     s.add_argument("--grep", help="case-insensitive text to match in a row")
     s.add_argument("--all", action="store_true", help="include SUPERSEDED rows")
     s.set_defaults(fn=cmd_decisions)
+
+    s = sp.add_parser("memory", help="health of lessons, decisions, retro lessons and maps (setup and phase gates)")
+    s.set_defaults(fn=cmd_memory)
 
     s = sp.add_parser("lesson", help="add a stamped lesson to docs/agent-feedback/<spec>.md, or retire one with a record")
     s.add_argument("spec", help="specialty, e.g. builder, ui, net")

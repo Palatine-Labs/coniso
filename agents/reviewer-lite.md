@@ -12,7 +12,7 @@ You are a **light Reviewer**. You review a small diff to the same standard as a 
 `CONISO` is the command under "Coniso script" in `.coniso/BRIEF.md`. Paths written `.coniso/…` are under the repo root printed in that header (it is also your starting directory). Use absolute paths with file tools.
 
 ## Procedure
-1. Read `.coniso/BRIEF.md` (Project rules and the Decisions log), your assignment (ticket, lens, SCOPE, BUDGET, WORKDIR) and the ticket packet's acceptance criteria.
+1. Read `.coniso/BRIEF.md` (Project rules and the Decisions log), your assignment (ticket, lens, SCOPE, BUDGET, WORKDIR, DECISIONS if any), any lessons file READ FIRST names (breaking one of its lessons is a spec finding), and the ticket packet's acceptance criteria.
 2. Run `CONISO diff <id>` and read the whole diff file: it is small. Read surrounding code only where a hunk needs it: Grep first, then a targeted Read.
 3. Run `CONISO test <id>` once. `PASS (cached …)` means the worktree is byte-identical to a tree the script already tested; the log it names is your evidence.
 4. **Acceptance.** For each item A1…An, met or unmet, with evidence: a test name, a file:line, or a reproduction.

@@ -15,6 +15,12 @@ A memory pass. Lessons, decisions and retro notes now build up across sprints in
 - **`decisions [--grep TERM] [--all]`** searches the brief's Decisions log and `.coniso/maps/decisions.md` together. Rows whose Decision starts with `SUPERSEDED` are hidden unless `--all` is passed.
 - **`retro --lessons --sprints N`** prints the Lessons of the last N sprints that recorded any, each under its heading. The Director reads three at setup.
 - `preflight` lists scout maps written 30 or more commits ago.
+- **Decisions scoped to each ticket.** `dispatch` and `review` add a `DECISIONS` line to an assignment when a Decisions log row's Binds names the ticket, its phase or `all`. Agents get the few rows that bind them inline; superseded rows are left out. Leads copy it to their engineers.
+- **Reviewers read the engineer's lessons.** `dispatch` records a ticket's specialty, and `review` puts that specialty's lessons file in the reviewer's READ FIRST. Breaking a lesson is a spec finding.
+- **`memory`** reports lessons per specialty (and how many are retired), decisions in the brief, archived and superseded, retro sprints with lessons, and stale maps, with a list of issues. `preflight` prints the issues in one line.
+- **Phase-gate memory review** (director.md §9): before go/no-go the Director promotes recurring retro lessons, retires what the phase made false, fixes `memory` issues, and adds a Memory block to the gate report for the user to approve.
+- **Research ahead** (director.md §9): at a gate, the Director dispatches up to 3 docs scouts for libraries, APIs and versions the next phase needs that no map covers. Scout maps start with a `Researched:` date and versions line.
+- Review failures feed lessons: at retro the Director turns a retried ticket's fix list into a `lesson` when a one-line rule would have prevented it. Fix lists name the regression test that locks each behaviour bug.
 
 ### Changed
 - `retro --lessons` skips sections with no lessons recorded, so one empty retro no longer hides earlier lessons.
