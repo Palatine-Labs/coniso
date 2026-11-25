@@ -113,6 +113,9 @@ Run `CONISO land <ids> [--tokens <reviewer's tokens>]` on `passed` tickets. It m
 | **CONFLICT** (exit 3) | Resume or spawn the ticket's lead (or its engineer, for a solo ticket): "Conflict: run `CONISO sync <id>`, resolve, `CONISO sync <id> --continue`, `CONISO test <id>`, set built". The Review Lead then re-reviews the resolution diff only. |
 | **INTEGRATION FAIL** (exit 4) | Treat as a review fail. Send a fix list to the lead (or engineer) with the log path. When the log's tail names a seam between tickets that you can fix in a few lines, it is a quick fix (§5d). |
 | **no changes** (exit 4) | The unit produced nothing. Re-dispatch with a tighter assignment. |
+| **SECRETS BLOCKED** (exit 6) | Treat as a review fail: send the builder the findings it printed. Never pass `--allow-secrets` yourself; only the user can approve merging a finding they confirm is fake. |
+
+**Revert.** When a merged ticket turns out to break something, run `CONISO revert <id> --reason "<what broke>"`. It commits a revert on the sprint branch and puts the ticket back in the queue (refusing if a merged ticket depends on it). Then run `CONISO test main`, put the reason in the ticket's fix list, and re-dispatch. Every revert appears in the retro; most deserve a `lesson`.
 
 ## 7. Failures and escalation
 1. **First fail:** send the fix list (`.coniso/reports/<id>.fix.md`) to the same lead, or the same engineer for a solo ticket, via SendMessage. Run `CONISO set <id> building --note "fix round 1"`. A fix list of a few named lines may be a quick fix instead (§5d); it does not count as a fix round.

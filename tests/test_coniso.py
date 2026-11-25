@@ -331,6 +331,121 @@ class Memory(Repo):
         self.assertNotIn("decisions.md (", out)
 
 
+class Pipeline(Repo):
+    """Lint/typecheck/format checks, secret scan, tests-unchanged warning, flaky reruns and revert."""
+
+    def conf(self):
+        return json.loads((self.root / ".coniso" / "config.json").read_text(encoding="utf-8"))
+
+    def test_lint_runs_first_and_stops_the_checks(self):
+        self.c("init", "--lint", f'"{PY}" -c "import sys; print(\'lint broke\'); sys.exit(3)"')
+        self.assertIn("lint_cmd", self.conf())
+        self.build("P1-01")
+        out = self.c("test", "P1-01", code=1)
+        self.assertIn("FAIL (exit 3)", out)
+        self.assertIn("CHECK FAILED: lint", out)
+        log = (self.root / ".coniso" / "reports" / "P1-01.test.log").read_text(encoding="utf-8")
+        self.assertNotIn("print(1)", log)                  # the test command never ran
+        self.c("init", "--lint", "")
+        self.assertNotIn("lint_cmd", {k for k, v in self.conf().items() if v})
+
+    def test_flaky_test_is_rerun_and_recorded(self):
+        marker = self.tmp / "ran-once"
+        self.c("init", "--test", f'"{PY}" -c "import os,sys; f=r\'{marker}\'; n=os.path.exists(f); open(f,\'w\').close(); sys.exit(0 if n else 1)"')
+        self.build("P1-01")
+        out = self.c("test", "P1-01")
+        self.assertIn("PASS (exit 0) · FLAKY", out)
+        rows = (self.root / ".coniso" / "flaky.jsonl").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(json.loads(rows[0])["where"], "P1-01")
+        self.assertIn("Flaky test runs (failed, then passed on rerun): 1", self.c("retro"))
+
+    def test_real_failure_still_fails_after_rerun(self):
+        self.c("init", "--test", f'"{PY}" -c "import sys; sys.exit(2)"')
+        self.build("P1-01")
+        out = self.c("test", "P1-01", code=1)
+        self.assertNotIn("FLAKY", out)
+        self.assertFalse((self.root / ".coniso" / "flaky.jsonl").exists())
+
+    def test_secret_in_diff_fails_test_unless_marked(self):
+        self.build("P1-01", fname="settings.py", body='AWS = "AKIA' + "ABCDEFGHIJKLMNOP" + '"\n')
+        out = self.c("test", "P1-01", code=1)
+        self.assertIn("FAIL (secret scan)", out)
+        self.assertIn("settings.py:1 AWS access key", out)
+        (self.wt("P1-01") / "settings.py").write_text('AWS = "AKIA' + "ABCDEFGHIJKLMNOP" + '"  # coniso:allow-secret\n',
+                                                      encoding="utf-8")
+        self.assertIn("PASS", self.c("test", "P1-01"))
+
+    def test_env_file_is_flagged_but_env_example_is_not(self):
+        self.build("P1-01", fname=".env.example", body="KEY=\n")
+        self.assertIn("PASS", self.c("test", "P1-01"))
+        (self.wt("P1-01") / ".env").write_text("KEY=x\n", encoding="utf-8")
+        self.assertIn(".env (secret-looking file)", self.c("test", "P1-01", code=1))
+
+    def test_scanner_patterns_and_negatives(self):
+        conf = {"secret_allow": [r"^fixtures/"]}
+        diff = ("+++ b/app.py\n@@ -0,0 +1,5 @@\n"
+                "+key = 'ghp_" + "a" * 36 + "'\n"
+                "+api_key = os.environ['API_KEY']\n"            # read from env: fine
+                "+password = \"<your password here>\"\n"        # placeholder: fine
+                "+db = 'postgres://app:hunter2secret@db.local/x'\n"
+                "+token: \"" + "x" * 20 + "\"\n"
+                "+++ b/fixtures/keys.py\n@@ -0,0 +1 @@\n+k = 'AKIA" + "Q" * 16 + "'\n")
+        kinds = [(f, n, k) for f, n, k in MOD.scan_secrets(diff, conf)]
+        self.assertEqual(kinds, [("app.py", 1, "GitHub token"), ("app.py", 4, "connection string with password"),
+                                 ("app.py", 5, "assigned secret")])
+
+    def test_merge_blocks_secrets_and_leaves_main_untouched(self):
+        self.build("P1-01", fname="cfg.py", body='STRIPE = "sk_live_' + "z" * 24 + '"\n')
+        head = self.git("rev-parse", "HEAD").strip()
+        out = self.sh(PY, str(self.root / ".coniso" / "coniso.py"), "merge", "P1-01", "--force", code=6)
+        self.assertIn("SECRETS BLOCKED P1-01", out)
+        self.assertEqual(self.git("rev-parse", "HEAD").strip(), head)
+        self.assertEqual(self.git("status", "--porcelain").strip(), "")
+        self.assertEqual(self.sprint()["tickets"]["P1-01"]["state"], "failed")
+        self.assertIn("MERGED P1-01", self.c("merge", "P1-01", "--force", "--allow-secrets"))
+
+    def test_tests_unchanged_warning(self):
+        self.build("P1-01", fname="app.py", body="x = 1\n")
+        out = self.c("test", "P1-01")
+        self.assertIn("TESTS UNCHANGED: 1 source file(s)", out)
+        self.assertTrue(self.sprint()["tickets"]["P1-01"]["tests_unchanged"])
+        (self.wt("P1-01") / "tests").mkdir()
+        (self.wt("P1-01") / "tests" / "test_app.py").write_text("def test_x(): pass\n", encoding="utf-8")
+        self.assertNotIn("TESTS UNCHANGED", self.c("test", "P1-01"))
+        self.assertFalse(self.sprint()["tickets"]["P1-01"]["tests_unchanged"])
+
+    def test_docs_only_change_needs_no_tests(self):
+        self.build("P1-01", fname="notes.md", body="hi\n")
+        self.assertNotIn("TESTS UNCHANGED", self.c("test", "P1-01"))
+
+    def test_revert_undoes_merge_and_requeues(self):
+        self.build("P1-01", fname="feature.txt", body="new\n")
+        self.c("merge", "P1-01", "--force")
+        self.assertTrue((self.root / "feature.txt").exists())
+        self.c("revert", "P1-01", code=2)                                   # --reason is required
+        out = self.c("revert", "P1-01", "--reason", "broke login")
+        self.assertIn("REVERTED P1-01", out)
+        self.assertFalse((self.root / "feature.txt").exists())
+        self.assertIn("Revert P1-01", self.git("log", "-1", "--format=%s"))
+        self.assertIn("Reason: broke login", self.git("log", "-1", "--format=%b"))
+        t = self.sprint()["tickets"]["P1-01"]
+        self.assertEqual(t["state"], "queued")
+        self.assertIsNone(t["merged_sha"])
+        self.assertEqual(t["reverts"][0]["reason"], "broke login")
+        self.assertIn("Reverted after merge (a lesson each?): P1-01 (broke login)", self.c("retro"))
+        self.c("dispatch", "P1-01")                                          # can be rebuilt
+        self.c("revert", "P1-01", "--reason", "x", code=1)                 # not merged now
+
+    def test_revert_refuses_when_a_merged_ticket_depends_on_it(self):
+        self.build("P1-01", fname="a.txt", body="a\n")
+        self.c("merge", "P1-01", "--force")
+        self.build("P1-02", fname="b.txt", body="b\n")
+        self.c("merge", "P1-02", "--force")
+        out = self.c("revert", "P1-01", "--reason", "x", code=1)
+        self.assertIn("merged tickets depend on P1-01: P1-02", out)
+        self.assertTrue((self.root / "a.txt").exists())
+
+
 class Dispatch(Repo):
     tickets = (ticket("P1-01", accept=("a", "b", "c")), ticket("P1-02", deps=["P1-01"]), ticket("P1-03"),
                ticket("P1-04", size="L", model="opus", effort="high"))

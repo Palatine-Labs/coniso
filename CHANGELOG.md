@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — pipeline checks
+- **Lint, type check and format check.** `init --lint`, `--typecheck` and `--format-check` add commands that run before build and test, cheapest first, in `test`, `merge` and `land`. The first failure stops the run and is named (`CHECK FAILED: lint`). Pass `''` to clear one.
+- **Secret scan.** `test` scans a ticket's diff, and `merge` scans the squash, for private keys, cloud and API tokens, live payment keys, JWTs, credentialed connection strings, hard-coded secret assignments, and files such as `.env` or `*.pem`. `test` fails; `merge` resets main, marks the ticket failed and exits 6 (`SECRETS BLOCKED`). A deliberate fake gets `coniso:allow-secret` on its line or its path in config `secret_allow`. `merge --allow-secrets` is for the user's say-so only.
+- **Tests-unchanged warning.** `test` prints `TESTS UNCHANGED` when source files changed and no test file did, and records it on the ticket. Reviewers treat it as a finding unless the acceptance items need no test.
+- **Flaky detection.** A failing test command is rerun once. A pass on the rerun counts as a pass, is marked `FLAKY` and recorded in `.coniso/flaky.jsonl`, and `retro` lists it. Set config `retry_flaky: false` to turn it off.
+- **`revert <id> --reason …`** undoes a merged ticket with a revert commit on the sprint branch and sends it back to queued (refusing if a merged ticket depends on it). `retro` lists reverts with their reasons.
+
 A memory pass. Lessons, decisions and retro notes now build up across sprints instead of being lost to trimming, empty retros or unrecorded pruning.
 
 ### Added

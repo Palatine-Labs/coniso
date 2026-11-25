@@ -190,7 +190,7 @@ Being straight about this:
 
 | Command | Purpose |
 |---|---|
-| `init [--stack <pack>\|none]`, `preflight` | Install or refresh; check git state, roadmap validity, nesting mode and permissions |
+| `init [--lint/--typecheck/--format-check <cmd>] [--stack <pack>\|none]`, `preflight` | Install or refresh; check git state, roadmap validity, nesting mode and permissions |
 | `permissions [--write [--accept-edits] \| --decline \| --remove]` | Show, grant, decline or undo Coniso's entries in `.claude/settings.local.json` |
 | `schedule [--phase P] [--tickets ids] [--limit N] [--add] [--formation managed\|direct]` | Plan a sprint |
 | `validate-plan <table> [--slots N] [--no-files]` | Check a delegation plan: one owner per file per step, complete assignment files, slot limits; `MATCHES SCHEDULE` when it is exactly the scheduled plan (no audit needed); writes `<table>.ctx.md`, the auditor's one-line-per-ticket context |
@@ -200,7 +200,8 @@ Being straight about this:
 | `wt add\|path\|remove <id>` | Worktrees on branch `coniso/<id>`, based on your current HEAD |
 | `diff <id>` / `diff --range A..B`, `test <id\|main> [--fresh]` | Diff and test output go to files; the console gets a summary. `test` reuses a passing run while the worktree's tree is unchanged |
 | `sync <id> [--continue]` | Bring main into a ticket's worktree to resolve conflicts |
-| `merge <id>` | Squash, integration test, commit; resets cleanly on conflict or failure |
+| `merge <id> [--allow-secrets]` | Squash, secret scan, integration checks, commit; resets cleanly on conflict, a secret finding or failure |
+| `revert <id> --reason TEXT [--force]` | Undo a merged ticket with a revert commit and send it back to queued |
 | `dispatch <ids> [--specialty …] [--review lead\|self] [--from U] [--plan name] [--rewrite]` | Worktree, complete assignment file and spawn line per ticket; a validated wave table when several |
 | `review <ids> [--panel [ids]] [--delta] [--model opus] [--plan name] [--tokens N]` | Sync with main, measure the diff, reviewer assignments per review plan with a BUDGET sized to it (patch, batch and delta reviews go to `reviewer-lite`; an oversized patch is promoted), set reviewing, spawn lines |
 | `verdict <id[,id]> --report <file>` | Record a reviewer verdict; prints `RULED pass\|fail` when the rules settle it, `NEEDS RULING: <reason>` when a leader must |

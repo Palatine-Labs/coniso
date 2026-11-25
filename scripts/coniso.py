@@ -583,7 +583,7 @@ def cmd_init(a):
         if not rp.exists():
             die(f"roadmap not found: {a.roadmap}")
         conf["roadmap"] = rp.relative_to(ROOT).as_posix()
-    for key in ("test", "build", "setup"):
+    for key in ("test", "build", "setup", "lint", "typecheck", "format"):
         val = getattr(a, key)
         if val is not None:
             conf[f"{key}_cmd"] = val
@@ -1436,20 +1436,116 @@ def cmd_diff(a):
     print("\n".join(s[-25:]) if s else "(no changes)")
 
 
-def run_checks(target, conf, log):
-    cmds = [x for x in (conf.get("build_cmd"), conf.get("test_cmd"), conf.get("stack_check_cmd")) if x]
-    if not cmds:
+CHECK_KEYS = ("format_cmd", "lint_cmd", "typecheck_cmd", "build_cmd", "test_cmd", "stack_check_cmd")   # cheap first
+
+
+def run_checks(target, conf, log, label=None):
+    """Run the configured checks in order, stopping at the first failure. A failing test command is rerun once
+    (unless retry_flaky is off): a pass on the rerun counts as a pass and is recorded in .coniso/flaky.jsonl."""
+    cmds = [(k, conf[k]) for k in CHECK_KEYS if conf.get(k)]
+    if not any(k in ("build_cmd", "test_cmd", "stack_check_cmd") for k, _ in cmds):
         return None, "no build/test command configured"
     text = []
     code = 0
-    for cmd in cmds:
+    for key, cmd in cmds:
         r = run(cmd, cwd=target, shell=True, timeout=conf.get("test_timeout", 1200))
         text.append(f"$ {cmd}\n{r.stdout or ''}{r.stderr or ''}\n[exit {r.returncode}]\n")
         code = r.returncode
+        if code != 0 and key == "test_cmd" and conf.get("retry_flaky", True):
+            r2 = run(cmd, cwd=target, shell=True, timeout=conf.get("test_timeout", 1200))
+            text.append(f"$ {cmd}   (rerun: flaky check)\n{r2.stdout or ''}{r2.stderr or ''}\n[exit {r2.returncode}]\n")
+            if r2.returncode == 0:
+                text.append(f"FLAKY: `{cmd}` failed (exit {code}) then passed on rerun; recorded in .coniso/flaky.jsonl\n")
+                with (L / "flaky.jsonl").open("a", encoding="utf-8") as fh:
+                    fh.write(json.dumps({"ts": now_z(), "where": label or p(target), "cmd": cmd,
+                                         "first_exit": code, "log": p(log)}) + "\n")
+            code = r2.returncode
         if code != 0:
+            text.append(f"CHECK FAILED: {key[:-4]}\n")
             break
     log.write_text("\n".join(text), encoding="utf-8")
     return code, "\n".join(text)
+
+
+SECRET_PATTERNS = [
+    ("private key", r"-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY"),
+    ("AWS access key", r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"),
+    ("GitHub token", r"\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{60,})\b"),
+    ("Slack token", r"\bxox[abposr]-[A-Za-z0-9-]{10,}"),
+    ("Stripe live key", r"\b[rs]k_live_[A-Za-z0-9]{20,}"),
+    ("Google API key", r"\bAIza[0-9A-Za-z_-]{35}\b"),
+    ("Anthropic key", r"\bsk-ant-[A-Za-z0-9_-]{20,}"),
+    ("OpenAI-style key", r"\bsk-(?:proj-)?[A-Za-z0-9]{32,}\b"),
+    ("JWT", r"\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"),
+    ("Supabase service key", r"(?i)service_role[\"']?\s*[:=]\s*[\"'][A-Za-z0-9._-]{30,}"),
+    ("assigned secret", r"(?i)\b[\w-]*(?:api[_-]?key|secret|passw(?:or)?d|token)[\w-]*[\"']?\s*[:=]\s*"
+                        r"[\"'][^\"'\s$<{]{16,}[\"']"),
+    ("connection string with password", r"\b[a-z][a-z0-9+]*://[^/\s:@]+:[^@\s/]{6,}@[\w.-]+"),
+]
+SECRET_FILES = r"(?:^|/)(?:\.env(?:\.[\w.-]+)?|id_[rd]sa|id_ed25519|[\w.-]*\.pem|[\w.-]*\.p12|[\w.-]*\.pfx|credentials\.json|service-account[\w.-]*\.json)$"
+SECRET_FILES_OK = r"(?:^|/)\.env\.(?:example|sample|template|dist)$"
+ALLOW_MARK = "coniso:allow-secret"
+
+
+def scan_secrets(diff_text, conf):
+    """Findings (file, line no, kind) in the added lines of a unified diff, plus added secret-looking files.
+    A line containing `coniso:allow-secret`, or a path matching config secret_allow (regexes), is skipped."""
+    allow = [re.compile(x) for x in conf.get("secret_allow", [])]
+    found, f, n = [], None, 0
+    for ln in diff_text.splitlines():
+        if ln.startswith("+++ "):
+            f = ln[4:].strip()
+            f = f[2:] if f.startswith("b/") else (None if f == "/dev/null" else f)
+            if f and re.search(SECRET_FILES, f) and not re.search(SECRET_FILES_OK, f) and not any(a.search(f) for a in allow):
+                found.append((f, 0, "secret-looking file"))
+            continue
+        m = re.match(r"^@@ -\d+(?:,\d+)? \+(\d+)", ln)
+        if m:
+            n = int(m.group(1)) - 1
+            continue
+        if ln.startswith("+") and f:
+            n += 1
+            if ALLOW_MARK in ln or any(a.search(f) for a in allow):
+                continue
+            for kind, rx in SECRET_PATTERNS:
+                if re.search(rx, ln[1:]):
+                    found.append((f, n, kind))
+                    break
+        elif not ln.startswith("-"):
+            n += 1
+    return found
+
+
+def secret_report(found):
+    return ("SECRETS: " + "; ".join(f"{f}:{n} {k}" if n else f"{f} ({k})" for f, n, k in found[:10])
+            + (f"; +{len(found) - 10} more" if len(found) > 10 else "")
+            + f". Move them to untracked config or env vars. A deliberate fake (a test fixture) gets `{ALLOW_MARK}` "
+              "on its line, or its path in config secret_allow.")
+
+
+TEST_PATH = r"(?:^|/)(?:tests?|__tests__|specs?|testing)/|(?:^|/)test_[^/]*$|[._-](?:test|spec|tests)\.[\w]+$|_test\.\w+$|Tests?\.\w+$"
+CODE_EXT = (".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".go", ".rs", ".java", ".kt", ".kts", ".cs", ".gd",
+            ".c", ".cc", ".cpp", ".h", ".hpp", ".rb", ".php", ".swift", ".dart", ".lua", ".scala", ".vue", ".svelte", ".sql")
+
+
+def ticket_diff(t, conf, names=False):
+    """A ticket worktree's diff against its base, new files included (text, or changed paths with names=True)."""
+    wt = Path(t["wt"])
+    git(["add", "-N", "--"] + pathspec_excludes(conf)[2:] + ["."], wt, check=False)
+    args = ["diff", "--name-only"] if names else ["diff", "-U0"]
+    out = git(args + [t["base"]] + pathspec_excludes(conf), wt, check=False).stdout
+    return out.split("\n") if names else out
+
+
+def test_change_warning(paths):
+    """A warning when source files changed and no test file did, else None."""
+    paths = [x for x in paths if x]
+    tests = [x for x in paths if re.search(TEST_PATH, x)]
+    code = [x for x in paths if x.endswith(CODE_EXT) and x not in tests]
+    if code and not tests:
+        return (f"TESTS UNCHANGED: {len(code)} source file(s) changed and no test file did "
+                f"({', '.join(code[:3])}{' …' if len(code) > 3 else ''})")
+    return None
 
 
 def tree_id(path, conf):
@@ -1488,13 +1584,27 @@ def cmd_test(a):
         t = ticket(c, a.id)
         target = Path(t["wt"]) if t.get("wt") else ROOT
     log = L / "reports" / f"{safe(a.id)}.test.log"
+    if t is not None and t.get("wt") and t.get("base"):
+        found = scan_secrets(ticket_diff(t, conf), conf)
+        if found:
+            print(f"TEST {a.id}: FAIL (secret scan) · nothing else ran")
+            print(secret_report(found))
+            sys.exit(1)
+        warn = test_change_warning(ticket_diff(t, conf, names=True))
+        if bool(warn) != bool(t.get("tests_unchanged")):
+            with Lock():
+                c = load_sprint()
+                ticket(c, a.id)["tests_unchanged"] = bool(warn)
+                save_sprint(c)
+        if warn:
+            print(warn + "; a reviewer will ask why unless the acceptance items need no test")
     tree = tree_id(target, conf) if (t is not None and t.get("wt") and conf.get("test_cache", True) and not a.fresh) else None
     hit = cached_pass(t, tree)
     if hit:
         print(f"TEST {a.id}: PASS (cached: tree {tree[:7]} unchanged since its last run at {hit['ts']}; "
               f"`test {a.id} --fresh` reruns) · log {hit['log']}")
         return
-    code, text = run_checks(target, conf, log)
+    code, text = run_checks(target, conf, log, label=a.id)
     if code is None:
         print(f"TEST {a.id}: SKIPPED — {text}")
         sys.exit(2)
@@ -1504,7 +1614,8 @@ def cmd_test(a):
             ticket(c, a.id)["test_cache"] = {"tree": tree, "code": 0, "ts": now_z(), "log": p(log)}
             save_sprint(c)
     tail = text.strip().splitlines()[-(5 if code == 0 else 25):]
-    print(f"TEST {a.id}: {'PASS' if code == 0 else 'FAIL'} (exit {code}) · log {p(log)}")
+    flaky = " · FLAKY (failed, then passed on rerun)" if code == 0 and "FLAKY:" in text else ""
+    print(f"TEST {a.id}: {'PASS' if code == 0 else 'FAIL'} (exit {code}){flaky} · log {p(log)}")
     print("\n".join(tail))
     sys.exit(0 if code == 0 else 1)
 
@@ -1604,6 +1715,14 @@ def cmd_merge(a):
         git(["reset", "--hard", "-q", "HEAD"], ROOT, check=False)
         mark("failed", "squash produced no net changes")
         die(f"{a.id}: no net changes after squash", code=4)
+    found = scan_secrets(git(["diff", "--cached", "-U0"], ROOT, check=False).stdout, conf)
+    if found and not getattr(a, "allow_secrets", False):
+        git(["reset", "--hard", "-q", "HEAD"], ROOT, check=False)
+        mark("failed", f"secret scan: {len(found)} finding(s)")
+        print(f"SECRETS BLOCKED {a.id}: main reset, nothing committed")
+        print(secret_report(found))
+        print(f"Send the builder the list. `merge {a.id} --allow-secrets` only on the user's say-so.")
+        sys.exit(6)
     checks = "skipped (--no-test)"
     if not a.no_test:
         log = L / "reports" / f"{safe(a.id)}.merge-test.log"
@@ -1612,7 +1731,7 @@ def cmd_merge(a):
         if hit:     # the squash produced exactly the tree the ticket's last passing `test` ran on
             checks = f"PASS (cached: tree {tree[:7]} already tested at {hit['ts']}, log {hit['log']})"
         else:
-            code, text = run_checks(ROOT, conf, log)
+            code, text = run_checks(ROOT, conf, log, label=f"merge {a.id}")
             if code not in (None, 0):
                 git(["reset", "--hard", "-q", "HEAD"], ROOT, check=False)
                 mark("failed", f"integration checks failed on {c.get('branch')} after squash; log {p(log)}")
@@ -1635,6 +1754,60 @@ def cmd_merge(a):
     ready = next_ready(load_sprint())
     if ready:
         print(f"Now ready: {', '.join(ready)}")
+
+
+def cmd_revert(a):
+    """Undo a merged ticket: a revert commit of its squash on the sprint branch, and the ticket back to queued."""
+    conf = cfg()
+    c = load_sprint()
+    t = ticket(c, a.id)
+    sha = t.get("merged_sha")
+    if t["state"] != "merged" or not sha:
+        die(f"{a.id} is {t['state']}; only a merged ticket can be reverted")
+    if not a.reason or not a.reason.strip():
+        die("say why: --reason \"<what broke>\"")
+    after = [x for x, tt in c["tickets"].items() if a.id in tt.get("deps", []) and tt["state"] == "merged"]
+    if after and not a.force:
+        die(f"merged tickets depend on {a.id}: {', '.join(after)}. Revert them first, or pass --force on the user's say-so")
+    if conf.get("worktrees", True):
+        dirty = main_dirty()
+        if dirty:
+            die(f"main checkout has uncommitted changes ({dirty[0][3:]} …); commit or stash them first")
+        if c.get("branch") and current_branch() != c["branch"]:
+            die(f"main checkout is on {current_branch()} but the sprint merges into {c['branch']}")
+        r = git(["revert", "--no-commit", sha], ROOT, check=False)
+        if r.returncode != 0:
+            git(["revert", "--abort"], ROOT, check=False)
+            git(["reset", "--hard", "-q", "HEAD"], ROOT, check=False)
+            die(f"revert of {sha[:7]} conflicts with later work: {(r.stderr or r.stdout).strip()[:200]}", code=3)
+        r = git(git_identity_args(ROOT) + ["commit", "-q", "-m", f"Revert {a.id}: {t['title']}",
+                                           "-m", f"Reason: {a.reason.strip()}", "-m", f"Reverts {sha}. Coniso sprint {c['name']}"],
+                ROOT, check=False)
+        if r.returncode != 0:
+            git(["reset", "--hard", "-q", "HEAD"], ROOT, check=False)
+            die(f"commit refused (hook?): {(r.stderr or r.stdout).strip()[:300]}", code=5)
+        rsha = git(["rev-parse", "HEAD"], ROOT).stdout.strip()
+        if git(["rev-parse", "--verify", "--quiet", f"refs/heads/coniso/{safe(a.id)}"], ROOT, check=False).returncode == 0:
+            with redirect_out():
+                cmd_wt(argparse.Namespace(action="remove", id=a.id, force=True))
+    else:
+        rsha = None
+    with Lock():
+        c = load_sprint()
+        t = ticket(c, a.id)
+        t.setdefault("reverts", []).append({"ts": now_z(), "merged_sha": sha, "revert_sha": rsha, "reason": a.reason.strip()})
+        for k in ("merged_sha", "verdict", "wt", "branch", "base"):
+            t[k] = None
+        for k in ("test_cache", "review_round", "tests_unchanged"):
+            t.pop(k, None)
+        t["state"] = "queued"
+        t["attempts"] += 1
+        note(t, "queued", f"reverted {sha[:7]}" + (f" as {rsha[:7]}" if rsha else "") + f": {a.reason.strip()}")
+        save_sprint(c)
+    print(f"REVERTED {a.id}: {sha[:7]} undone" + (f" by {rsha[:7]}" if rsha else " (in-place mode: undo the files by hand)")
+          + f" · ticket back to queued (attempt {t['attempts'] + 1})")
+    print(f"Run `test main`. Before re-dispatching, put the reason in the packet or a fix list, and consider "
+          f"`lesson <specialty> \"<rule>\" --source {a.id}` so it does not happen again.")
 
 
 def cmd_ledger(a):
@@ -2162,6 +2335,17 @@ def cmd_retro(a):
     if c.get("quickfixes"):
         lines.append(f"Quick fixes: {c['quickfixes']} — " + ", ".join(
             f"{tid}×{t['quickfixes']}" if t["quickfixes"] > 1 else tid for tid, t in c["tickets"].items() if t.get("quickfixes")))
+    rev = [f"{tid} ({r['reason']})" for tid, t in c["tickets"].items() for r in t.get("reverts", [])]
+    if rev:
+        lines.append("Reverted after merge (a lesson each?): " + "; ".join(rev))
+    fl = L / "flaky.jsonl"
+    if fl.exists():
+        since = c.get("created", "")
+        fr = [json.loads(x) for x in fl.read_text(encoding="utf-8").splitlines() if x.strip()]
+        fr = [r for r in fr if r.get("ts", "") >= since]
+        if fr:
+            lines.append(f"Flaky test runs (failed, then passed on rerun): {len(fr)} · "
+                         + ", ".join(sorted({r['where'] for r in fr})) + " · fix or quarantine the flaky tests")
     tk = token_totals(c)
     if tk:
         lines += tk
@@ -3194,6 +3378,9 @@ def main():
     s.add_argument("--roadmap")
     s.add_argument("--test")
     s.add_argument("--build")
+    s.add_argument("--lint", help="lint command run before build and test (e.g. 'ruff check .', 'npx eslint .'); '' clears it")
+    s.add_argument("--typecheck", help="type check run before build and test (e.g. 'npx tsc --noEmit', 'mypy src'); '' clears it")
+    s.add_argument("--format-check", dest="format", help="formatting check, not a fixer (e.g. 'npx prettier --check .'); '' clears it")
     s.add_argument("--setup", help="command run in each new worktree, e.g. 'npm ci' or 'dotnet restore'")
     s.add_argument("--link", help="comma list of untracked dirs to link into worktrees, e.g. node_modules")
     s.add_argument("--copy", help="comma list of untracked files to copy into worktrees, e.g. .env.local")
@@ -3284,7 +3471,15 @@ def main():
     s.add_argument("--no-test", action="store_true")
     s.add_argument("--keep", action="store_true")
     s.add_argument("--fresh", action="store_true", help="run the integration checks even if the squashed tree already passed `test`")
+    s.add_argument("--allow-secrets", dest="allow_secrets", action="store_true",
+                   help="merge despite secret-scan findings (only on the user's say-so)")
     s.set_defaults(fn=cmd_merge)
+
+    s = sp.add_parser("revert", help="undo a merged ticket with a revert commit and send it back to queued")
+    s.add_argument("id")
+    s.add_argument("--reason", required=True, help="what broke")
+    s.add_argument("--force", action="store_true", help="revert even though merged tickets depend on it")
+    s.set_defaults(fn=cmd_revert)
 
     s = sp.add_parser("ledger")
     s.add_argument("action", choices=["add", "stats"])
