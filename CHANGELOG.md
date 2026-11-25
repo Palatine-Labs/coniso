@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+A memory pass. Lessons, decisions and retro notes now build up across sprints instead of being lost to trimming, empty retros or unrecorded pruning.
+
+### Added
+- **`lesson <spec> "<text>" [--source ID]`** appends a stamped lesson (`- [YYYY-MM-DD · source] …`) to `docs/agent-feedback/<spec>.md`. It refuses duplicates, and refuses a lesson that was retired unless `--force` is passed.
+- **`lesson <spec> --retire MATCH --by "<reason>"`** moves one lesson to `<spec>.retired.md` with the date and reason, so condensing a file leaves a record and a dropped lesson isn't silently re-added. `retro` doesn't count `*.retired.md` toward the 30-line cap.
+- **`decisions [--grep TERM] [--all]`** searches the brief's Decisions log and `.coniso/maps/decisions.md` together. Rows whose Decision starts with `SUPERSEDED` are hidden unless `--all` is passed.
+- **`retro --lessons --sprints N`** prints the Lessons of the last N sprints that recorded any, each under its heading. The Director reads three at setup.
+- `preflight` lists scout maps written 30 or more commits ago.
+
+### Changed
+- `retro --lessons` skips sections with no lessons recorded, so one empty retro no longer hides earlier lessons.
+- Re-running `retro` in the same sprint rewrites that sprint's section and keeps its Lessons, instead of appending a second placeholder section.
+- `brief-trim` also archives `SUPERSEDED` rows, and its pointer names the `decisions` command. Reviewers (spec lens) run `decisions --grep` for each area a diff changes, so archived decisions are still checked.
+- Dispatch finds a lessons file kept under a specialty's legacy name (e.g. `audio-designer.md`) when the current name is missing.
+- The engineer prompt reads the lessons file named in READ FIRST (main checkout) instead of the worktree copy, which can be older than the newest lesson.
+- The brief template's Decisions log is no longer labelled "append-only". It gives the stamp format and the supersede rule.
+
 ## [1.2.0] - 2026-11-10
 
 A usage pass on small work and on test runs. Review stays on every ticket that merges; what shrinks is the ceiling a reviewer is given for a small diff, the number of times a suite runs per ticket, and the context an auditor reads.

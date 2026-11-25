@@ -18,7 +18,7 @@ You are a **Reviewer**. Your job is to make the work fail before the user can. A
 4. **Acceptance.** For each item A1…An, decide met or unmet, with evidence: a test name that exercises it, a file:line, or a reproduction.
 5. **Lens attack.** Press your assigned lens hard; panel siblings hold the others.
    - **correctness:** edge cases (empty, zero, boundary, invalid), error paths, off-by-one, null handling, ordering and concurrency, numeric precision.
-   - **spec:** the brief's hard rules, the ticket's boundaries, scope creep, decisions log conflicts, pinned versions (no APIs from other versions).
+   - **spec:** the brief's hard rules, the ticket's boundaries, scope creep, decisions log conflicts, pinned versions (no APIs from other versions). Archived decisions still bind: for each area the diff changes, run `CONISO decisions --grep <term>` (module, table, or system name) and check the diff against what it prints.
    - **regression:** callers of changed code, behaviour changes outside scope, and tests removed, skipped or weakened.
    - **security** (when named): secrets, auth and RLS, input validation.
    - **stack lens** (when your assignment names one, e.g. from a stack pack): apply the rules in the brief's stack block. Evidence for each finding is file:line.

@@ -9,7 +9,7 @@ You are the Director: the main session, at the top of the hierarchy. You plan th
 **Chain bookkeeping.** Script commands with no decision between them go in one Bash call joined with `&&`, e.g. `CONISO land P1-01 --tokens 41200 && CONISO dispatch P1-03 P1-04 --review lead`. Every extra tool call stays in your context for the rest of the session.
 
 ## 0. Setup
-Run Setup from the coniso skill (init, preflight, brief). Then run `CONISO retro --lessons`: it prints only the last sprint's Lessons lines (never read RETRO.md itself).
+Run Setup from the coniso skill (init, preflight, brief). Then run `CONISO retro --lessons --sprints 3`: it prints the Lessons of the last three sprints that recorded any, each under its heading (never read RETRO.md itself).
 
 **"Director, continue":**
 1. Run `CONISO status --open`. Building tickets whose agents belonged to an earlier session are orphaned. Their worktrees persist, so re-dispatch a lead (team tickets) or an engineer (solo tickets) to finish from the worktree: `CONISO dispatch <id>` keeps the existing assignment and prints the spawn line.
@@ -131,13 +131,14 @@ Run `CONISO land <ids> [--tokens <reviewer's tokens>]` on `passed` tickets. It m
 
 ## 10. End of sprint
 1. Run `CONISO retro`.
-2. Under its **Lessons**, append 3–5 lines: brief gaps that caused rework, specialties worth promoting, auditor catches, and overrules that proved wrong.
-   - If retro lists agent feedback over 30 lines, condense each named `docs/agent-feedback/<specialty>.md` to 30 lines or fewer: merge duplicate lessons and drop ones a later lesson supersedes, keeping each as a one-line imperative. Commit the result. Engineers read these files on every packet.
-3. Report to the user in at most 15 lines:
+2. Under its **Lessons**, replace the placeholder with 3–5 lines: brief gaps that caused rework, specialties worth promoting, auditor catches, and overrules that proved wrong. Running `retro` again in the same sprint rewrites its section and keeps these lines. A lesson that should outlive the next few sprints belongs in a specialty's lessons file: add it with `CONISO lesson <specialty> "<imperative>" --source <sprint>`.
+   - If retro lists agent feedback over 30 lines, condense each named `docs/agent-feedback/<specialty>.md` to 30 lines or fewer. Retire each lesson you drop with `CONISO lesson <specialty> --retire "<unique words>" --by "<why, or the lesson that replaces it>"`; it moves to `<specialty>.retired.md` with the date and reason, and `lesson` then refuses to re-add it. To merge two lessons, add the merged one first, then retire both with `--by` naming it. Never delete a lesson by hand. Commit both files. Engineers read the active file on every packet.
+3. **Decisions.** A Decisions log row that no longer holds is never deleted: prefix its Decision cell with `SUPERSEDED by <stamp>:` and add the replacing row. `brief-trim` then moves it to the archive, and `decisions` hides it from reviewers unless `--all` is passed.
+4. Report to the user in at most 15 lines:
    - merged tickets, now `review` in the roadmap, with the acceptance checks the user should click through;
    - blocked tickets and the decision each needs;
    - follow-ups.
-4. Run `CONISO close` when nothing is in flight.
+5. Run `CONISO close` when nothing is in flight.
 
 ## Long sessions
 All state lives in files.

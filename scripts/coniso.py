@@ -838,6 +838,10 @@ def cmd_preflight(a):
         line("WARN", f"brief core is {core} lines / {core_bytes // 1024} KB (limit {BRIEF_CORE_MAX} lines or "
                      f"{BRIEF_CORE_MAX_BYTES // 1024} KB; every agent reads it on every spawn): trim it, move detail to "
                      ".coniso/maps/*.md and point at it; `brief-trim` moves older Decisions log rows to .coniso/maps/decisions.md")
+    stale_maps = stale_map_report()
+    if stale_maps:
+        line("INFO", f"maps written {MAP_STALE_COMMITS}+ commits ago (re-scout or delete before trusting them): "
+                     + ", ".join(stale_maps))
     c = load_sprint(required=False)
     if c:
         live = [tid for tid, t in c["tickets"].items() if t["state"] in ACTIVE]
@@ -847,6 +851,26 @@ def cmd_preflight(a):
         line("WARN", f"leftover worktrees with no sprint: {', '.join(stale)} (wt remove <id> --force)")
     print("\n".join(out))
     sys.exit(0 if ok else 1)
+
+
+MAP_STALE_COMMITS = 30
+
+
+def stale_map_report():
+    """Scout maps (not the decisions archive) with MAP_STALE_COMMITS or more commits on HEAD since the map was written."""
+    d = L / "maps"
+    if not d.is_dir():
+        return []
+    out = []
+    for f in sorted(d.glob("*.md")):
+        if f.name == Path(DECISIONS_ARCHIVE).name:
+            continue
+        since = dt.datetime.fromtimestamp(f.stat().st_mtime).isoformat(timespec="seconds")
+        r = git(["rev-list", "--count", f"--since={since}", "HEAD"], ROOT, check=False)
+        n = int(r.stdout.strip()) if r.returncode == 0 and r.stdout.strip().isdigit() else 0
+        if n >= MAP_STALE_COMMITS:
+            out.append(f"{f.name} ({n})")
+    return out
 
 
 BRIEF_CORE_MAX = 150
@@ -901,14 +925,15 @@ def cmd_brief_trim(a):
             continue
         if s.startswith("|"):
             m = re.search(r"\d{4}-\d{2}-\d{2}", s.strip("|").split("|")[0])
-            if m and m.group(0) < cutoff:
+            if (m and m.group(0) < cutoff) or is_superseded(ln):
                 moved.append(ln)
                 continue
         keep.append(ln)
     if not moved:
         print(f"brief-trim: no Decisions log rows dated before {cutoff} · core {brief_core_lines()} lines")
         return
-    pointer = f"Older decisions (still binding): .coniso/{DECISIONS_ARCHIVE}. Grep it before changing an area they cover."
+    pointer = (f"Older decisions (still binding): .coniso/{DECISIONS_ARCHIVE}. "
+               f"Run `{cfg().get('cmd', 'CONISO')} decisions --grep <term>` before changing an area they cover.")
     if not any(pointer.split(":")[0] in ln for ln in keep):
         while keep and not keep[-1].strip():
             keep.pop()
@@ -920,7 +945,49 @@ def cmd_brief_trim(a):
     with archive.open("a", encoding="utf-8") as fh:
         fh.write(head + "\n".join(moved) + "\n")
     brief.write_text("\n".join(lines[:start + 1] + keep + lines[end:]) + "\n", encoding="utf-8")
-    print(f"brief-trim: moved {len(moved)} row(s) dated before {cutoff} to .coniso/{DECISIONS_ARCHIVE} · core now {brief_core_lines()} lines")
+    print(f"brief-trim: moved {len(moved)} row(s) dated before {cutoff} or superseded to .coniso/{DECISIONS_ARCHIVE} "
+          f"· core now {brief_core_lines()} lines")
+
+
+def is_superseded(row):
+    """A Decisions log row retired by prefixing its Decision cell with SUPERSEDED (rows are never deleted)."""
+    cells = row.strip().strip("|").split("|")
+    return len(cells) > 1 and cells[1].strip().upper().startswith("SUPERSEDED")
+
+
+def decision_rows():
+    """(source, row) for every data row of the brief's Decisions log and of the archive, in file order."""
+    out = []
+    brief = L / "BRIEF.md"
+    if brief.exists():
+        lines = brief.read_text(encoding="utf-8").splitlines()
+        start = next((i for i, ln in enumerate(lines) if ln.startswith("## Decisions log")), None)
+        if start is not None:
+            end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith("## ")), len(lines))
+            out += [("brief", ln) for ln in lines[start + 1:end]]
+    arch = L / DECISIONS_ARCHIVE
+    if arch.exists():
+        out = [("archive", ln) for ln in arch.read_text(encoding="utf-8").splitlines()] + out
+    rows = []
+    for src, ln in out:
+        s = ln.strip()
+        if not s.startswith("|") or re.fullmatch(r"\|[\s:|-]+\|", s) or re.match(r"\|\s*Stamp\s*\|", s):
+            continue
+        rows.append((src, ln))
+    return rows
+
+
+def cmd_decisions(a):
+    """Print binding decisions from the brief and the archive, optionally filtered; superseded rows only with --all."""
+    rows = [(s, r) for s, r in decision_rows() if a.all or not is_superseded(r)]
+    if a.grep:
+        rows = [(s, r) for s, r in rows if a.grep.lower() in r.lower()]
+    if not rows:
+        print("no matching decisions" if a.grep else "no decisions recorded")
+        return
+    print("| Stamp | Decision | Binds |  (source)")
+    for s, r in rows:
+        print(f"{r.rstrip()}  ({s})")
 
 
 def select_from_roadmap(a, conf, c):
@@ -1860,6 +1927,58 @@ def cmd_roadmap_sync(a):
 
 
 FEEDBACK_MAX = 30
+RETIRED_SUFFIX = ".retired.md"
+
+
+def lesson_key(line):
+    """Comparable text of a lesson line: no bullet, no [stamp] prefix, no retirement suffix, lowercase, words only."""
+    s = re.sub(r"^\s*[-*]\s*", "", line)
+    s = re.sub(r"^\[[^\]]*\]\s*", "", s)
+    s = s.split(" — retired ")[0]
+    return " ".join(re.findall(r"[a-z0-9]+", s.lower()))
+
+
+def cmd_lesson(a):
+    """Add a stamped lesson, or retire one into <spec>.retired.md with a dated reason. Never commits:
+    the main session commits the lessons file with the related fix."""
+    active = feedback_file(a.spec)
+    retired = active.with_name(active.stem + RETIRED_SUFFIX)
+    lines = active.read_text(encoding="utf-8").splitlines() if active.exists() else []
+    today = dt.date.today().isoformat()
+    if a.retire:
+        if a.text:
+            die("pass either a lesson to add or --retire MATCH, not both")
+        hits = [i for i, ln in enumerate(lines) if ln.strip() and a.retire.lower() in ln.lower()]
+        if len(hits) != 1:
+            die(f"--retire must match exactly one line in {active.relative_to(ROOT).as_posix()}; it matched {len(hits)}")
+        if not a.by:
+            die("--retire needs --by \"<why, or the lesson that replaces it>\"")
+        line_ = lines.pop(hits[0])
+        active.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+        new = not retired.exists()
+        with retired.open("a", encoding="utf-8") as fh:
+            if new:
+                fh.write(f"# Retired lessons — {a.spec}\nNo longer binding. `lesson` refuses to re-add one of these without --force.\n\n")
+            fh.write(f"{line_.rstrip()} — retired {today}: {a.by}\n")
+        print(f"lesson retired from {active.name} to {retired.name} · {len([x for x in lines if x.strip()])} active line(s)")
+        return
+    if not a.text or not a.text.strip():
+        die("give the lesson text, e.g. lesson ui \"Check contrast in dark mode before handing off.\"")
+    text = " ".join(a.text.split())
+    key = lesson_key(text)
+    if any(lesson_key(ln) == key for ln in lines if ln.strip()):
+        die(f"already in {active.name}: nothing added")
+    if retired.exists() and not a.force:
+        old = [ln for ln in retired.read_text(encoding="utf-8").splitlines() if ln.startswith("-") and lesson_key(ln) == key]
+        if old:
+            die(f"this lesson was retired: {old[0].strip()}\nRe-add only if the reason no longer holds: pass --force")
+    stamp = today + (f" · {a.source}" if a.source else "")
+    active.parent.mkdir(parents=True, exist_ok=True)
+    lines.append(f"- [{stamp}] {text}")
+    active.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    n = len([x for x in lines if x.strip()])
+    warn = f" · over {FEEDBACK_MAX}: condense at retro" if n > FEEDBACK_MAX else ""
+    print(f"lesson added to {active.relative_to(ROOT).as_posix()} ({n} line(s){warn}); commit it with the related fix")
 
 
 def token_totals(c):
@@ -1880,28 +1999,50 @@ def token_totals(c):
             "Tokens per role: " + ", ".join(f"{k} {v:,}" for k, v in sorted(per_role.items(), key=lambda x: -x[1]))]
 
 
-def last_lessons():
-    """The Lessons lines of the last sprint in RETRO.md (what the Director reads at setup)."""
-    f = L / "RETRO.md"
-    if not f.exists():
-        return []
-    text = f.read_text(encoding="utf-8")
-    last = text[text.rfind("\n## ") + 1:] if "\n## " in text else text
+LESSON_PLACEHOLDER = "- (Director: brief gaps, forged specialties worth keeping, routing that the auditor caught)"
+
+
+def retro_sections(text):
+    """RETRO.md split into sections, each starting at a "## " heading (text before the first heading is dropped)."""
+    return [s for s in re.split(r"(?m)^(?=## )", text) if s.startswith("## ")]
+
+
+def section_lessons(section):
+    """The Director's lines under "Lessons:" in one retro section, without the placeholder."""
     out, on = [], False
-    for ln in last.splitlines():
+    for ln in section.splitlines():
         if ln.startswith("Lessons:"):
             on = True
             continue
-        if on and ln.startswith("## "):
-            break
         if on and ln.strip() and "(Director:" not in ln:
             out.append(ln)
     return out
 
 
+def last_lessons(sprints=1):
+    """Lessons from the most recent `sprints` retro sections that recorded any (what the Director reads at setup).
+    Sections whose Lessons are empty or only the placeholder are skipped, so one empty retro hides nothing."""
+    f = L / "RETRO.md"
+    if not f.exists():
+        return []
+    picked = []
+    for sec in reversed(retro_sections(f.read_text(encoding="utf-8"))):
+        ls = section_lessons(sec)
+        if ls:
+            picked.append((sec.splitlines()[0], ls))
+            if len(picked) >= sprints:
+                break
+    if sprints <= 1:
+        return picked[0][1] if picked else []
+    out = []
+    for head, ls in reversed(picked):     # oldest first, like the file
+        out += [head] + ls
+    return out
+
+
 def cmd_retro(a):
     if a.lessons:
-        ls = last_lessons()
+        ls = last_lessons(max(1, a.sprints))
         print("\n".join(ls) if ls else "no lessons recorded")
         return
     c = load_sprint()
@@ -1937,15 +2078,27 @@ def cmd_retro(a):
     long_fb = []
     if fb.is_dir():
         for f in sorted(fb.glob("*.md")):
+            if f.name.endswith(RETIRED_SUFFIX):
+                continue
             n = len([x for x in f.read_text(encoding="utf-8").splitlines() if x.strip()])
             if n > FEEDBACK_MAX:
                 long_fb.append(f"{f.name} ({n})")
     if long_fb:
-        lines.append(f"Agent feedback over {FEEDBACK_MAX} lines (condense, director.md §10): " + ", ".join(long_fb))
-    lines += ["Lessons:", "- (Director: brief gaps, forged specialties worth keeping, routing that the auditor caught)", ""]
+        lines.append(f"Agent feedback over {FEEDBACK_MAX} lines (condense with `lesson <spec> --retire`, director.md §10): "
+                     + ", ".join(long_fb))
+    rf = L / "RETRO.md"
+    prior = rf.read_text(encoding="utf-8") if rf.exists() else ""
+    secs = retro_sections(prior)
+    rerun = bool(secs) and secs[-1].startswith(f"## {c['name']} — ")
+    kept = section_lessons(secs[-1]) if rerun else []     # a re-run replaces its own section and keeps its Lessons
+    lines += ["Lessons:"] + (kept or [LESSON_PLACEHOLDER]) + [""]
     text = "\n".join(lines)
-    with (L / "RETRO.md").open("a", encoding="utf-8") as fh:
-        fh.write(text + "\n")
+    if rerun:
+        head = prior[:len(prior) - len(secs[-1])]
+        rf.write_text(head + text + "\n", encoding="utf-8")
+    else:
+        with rf.open("a", encoding="utf-8") as fh:
+            fh.write(text + "\n")
     print(text)
 
 
@@ -2014,10 +2167,29 @@ def accept_range(n):
     return f"acceptance items 1-{n}" if n > 1 else ("acceptance item 1" if n == 1 else "the ticket's objective")
 
 
-def specialty_files(spec):
+def specialty_file(spec):
     own = L / "specialties" / f"{spec}.md"
-    out = [p(own if own.exists() else L / "ref" / "specialties" / f"{spec}.md")]
-    fb = ROOT / "docs" / "agent-feedback" / f"{spec}.md"
+    return own if own.exists() else L / "ref" / "specialties" / f"{spec}.md"
+
+
+def feedback_file(spec):
+    """docs/agent-feedback/<spec>.md, or the legacy name the specialty header gives ("older projects: x.md")
+    when only that one exists. Always a path in the main checkout, never a worktree copy."""
+    fb_dir = ROOT / "docs" / "agent-feedback"
+    canon = fb_dir / f"{spec}.md"
+    if canon.exists():
+        return canon
+    sf = specialty_file(spec)
+    if sf.exists():
+        m = re.search(r"older projects:\s*([\w.-]+\.md)", "\n".join(sf.read_text(encoding="utf-8").splitlines()[:3]))
+        if m and (fb_dir / m.group(1)).exists():
+            return fb_dir / m.group(1)
+    return canon
+
+
+def specialty_files(spec):
+    out = [p(specialty_file(spec))]
+    fb = feedback_file(spec)
     if fb.exists():
         out.append(p(fb))
     return out
@@ -3097,8 +3269,25 @@ def main():
     s.set_defaults(fn=cmd_brief_trim)
 
     s = sp.add_parser("retro")
-    s.add_argument("--lessons", action="store_true", help="print only the last sprint's Lessons lines; writes nothing")
+    s.add_argument("--lessons", action="store_true",
+                   help="print the Lessons lines of the last sprint that recorded any; writes nothing")
+    s.add_argument("--sprints", type=int, default=1,
+                   help="with --lessons: how many recent sprints with lessons to print, each under its heading (default 1)")
     s.set_defaults(fn=cmd_retro)
+
+    s = sp.add_parser("decisions", help="search the Decisions log in the brief and its archive (superseded rows hidden)")
+    s.add_argument("--grep", help="case-insensitive text to match in a row")
+    s.add_argument("--all", action="store_true", help="include SUPERSEDED rows")
+    s.set_defaults(fn=cmd_decisions)
+
+    s = sp.add_parser("lesson", help="add a stamped lesson to docs/agent-feedback/<spec>.md, or retire one with a record")
+    s.add_argument("spec", help="specialty, e.g. builder, ui, net")
+    s.add_argument("text", nargs="?", help="the lesson: a one-line imperative")
+    s.add_argument("--source", help="where it came from: a roadmap ticket id, a sprint, or 'user'")
+    s.add_argument("--retire", metavar="MATCH", help="move the one active lesson containing MATCH to <spec>.retired.md")
+    s.add_argument("--by", help="with --retire: why, or the lesson that replaces it")
+    s.add_argument("--force", action="store_true", help="add even though a retired lesson says the same thing")
+    s.set_defaults(fn=cmd_lesson)
 
     s = sp.add_parser("close")
     s.add_argument("--force", action="store_true")

@@ -147,6 +147,132 @@ class TokensAndStatus(Repo):
         self.assertNotIn("net.md", out)
 
 
+class Memory(Repo):
+    """Long-lived guidance: retro lessons, agent-feedback lessons, the Decisions log and scout maps."""
+
+    def retro_file(self):
+        return self.root / ".coniso" / "RETRO.md"
+
+    def fb(self, name):
+        return self.root / "docs" / "agent-feedback" / name
+
+    def add_decisions(self, *rows):
+        b = self.root / ".coniso" / "BRIEF.md"
+        b.write_text(b.read_text(encoding="utf-8").replace(
+            "|-------|----------|-------|\n", "|-------|----------|-------|\n" + "".join(r + "\n" for r in rows), 1),
+            encoding="utf-8")
+
+    # retro lessons
+    def test_empty_last_retro_does_not_hide_earlier_lessons(self):
+        self.retro_file().write_text(
+            "## s1 — 2026-01-01\nLessons:\n- keep me\n\n## s2 — 2026-02-01\nLessons:\n"
+            "- (Director: brief gaps)\n", encoding="utf-8")
+        self.assertEqual(self.c("retro", "--lessons").strip().splitlines(), ["- keep me"])
+
+    def test_lessons_across_sprints_oldest_first_with_headings(self):
+        self.retro_file().write_text(
+            "## s1 — 2026-01-01\nLessons:\n- one\n\n## s2 — 2026-02-01\nLessons:\n- (Director: x)\n\n"
+            "## s3 — 2026-03-01\nLessons:\n- three\n\n## s4 — 2026-04-01\nLessons:\n- four\n", encoding="utf-8")
+        out = self.c("retro", "--lessons", "--sprints", "2").strip().splitlines()
+        self.assertEqual(out, ["## s3 — 2026-03-01", "- three", "## s4 — 2026-04-01", "- four"])
+        self.assertNotIn("- one", out)                       # outside the window
+        self.assertEqual(self.c("retro", "--lessons", "--sprints", "9").count("## s"), 3)   # s2 has none
+
+    def test_rerun_in_same_sprint_rewrites_section_and_keeps_lessons(self):
+        self.c("retro")
+        f = self.retro_file()
+        f.write_text(f.read_text(encoding="utf-8").replace(MOD.LESSON_PLACEHOLDER, "- written by the Director"),
+                     encoding="utf-8")
+        self.c("retro")
+        text = f.read_text(encoding="utf-8")
+        self.assertEqual(len(MOD.retro_sections(text)), 1)
+        self.assertIn("- written by the Director", text)
+        self.assertNotIn("(Director:", text)
+        self.assertEqual(self.c("retro", "--lessons").strip(), "- written by the Director")
+
+    # agent-feedback lessons
+    def test_lesson_add_is_stamped_and_refuses_duplicates(self):
+        out = self.c("lesson", "ui", "Check contrast in dark mode.", "--source", "P1-01")
+        self.assertIn("docs/agent-feedback/ui.md", out)
+        line = self.fb("ui.md").read_text(encoding="utf-8").strip()
+        self.assertRegex(line, r"^- \[\d{4}-\d{2}-\d{2} · P1-01\] Check contrast in dark mode\.$")
+        self.c("lesson", "ui", "check contrast in DARK mode", code=1)          # same words, other case and punctuation
+        self.assertEqual(len(self.fb("ui.md").read_text(encoding="utf-8").splitlines()), 1)
+
+    def test_retired_lesson_leaves_record_is_not_dispatched_and_is_not_readded(self):
+        self.c("lesson", "ui", "Use inline styles for speed.")
+        self.c("lesson", "ui", "Use the shared theme tokens.")
+        self.c("lesson", "ui", "--retire", "inline styles", code=1)            # needs a reason
+        self.c("lesson", "ui", "--retire", "Use", "--by", "x", code=1)          # ambiguous: two matches
+        self.c("lesson", "ui", "--retire", "inline styles", "--by", "superseded by theme tokens")
+        active = self.fb("ui.md").read_text(encoding="utf-8")
+        retired = self.fb("ui.retired.md").read_text(encoding="utf-8")
+        self.assertNotIn("inline styles", active)
+        self.assertIn("theme tokens", active)
+        self.assertRegex(retired, r"Use inline styles for speed\. — retired \d{4}-\d{2}-\d{2}: superseded by theme tokens")
+        self.c("lesson", "ui", "use inline styles for speed", code=1)          # tombstone: refused
+        self.assertNotIn("inline styles", self.fb("ui.md").read_text(encoding="utf-8"))
+        self.c("lesson", "ui", "use inline styles for speed", "--force")
+        self.assertIn("inline styles", self.fb("ui.md").read_text(encoding="utf-8"))
+        # the retired file is never named to engineers
+        self.git("add", "-A")
+        self.git("commit", "-qm", "lessons")
+        self.c("dispatch", "P1-01", "--specialty", "ui")
+        a = (self.root / ".coniso" / "assignments" / "P1-01.E1.md").read_text(encoding="utf-8")
+        self.assertIn("agent-feedback/ui.md", a)
+        self.assertNotIn("ui.retired.md", a)
+
+    def test_retro_cap_ignores_retired_file(self):
+        self.fb("ui.md").parent.mkdir(parents=True)
+        self.fb("ui.retired.md").write_text("\n".join(f"- old {i}" for i in range(40)), encoding="utf-8")
+        self.assertNotIn("ui.retired.md", self.c("retro"))
+
+    def test_dispatch_names_legacy_lessons_file(self):
+        self.fb("ui-designer.md").parent.mkdir(parents=True)
+        self.fb("ui-designer.md").write_text("- legacy lesson\n", encoding="utf-8")
+        self.git("add", "-A")
+        self.git("commit", "-qm", "legacy")
+        self.c("dispatch", "P1-01", "--specialty", "ui")
+        a = (self.root / ".coniso" / "assignments" / "P1-01.E1.md").read_text(encoding="utf-8")
+        self.assertIn("agent-feedback/ui-designer.md", a)
+
+    # decisions
+    def test_decisions_searches_brief_and_archive_and_hides_superseded(self):
+        self.add_decisions("| 2020-01-02 · P0-01 | Store money as integer cents | billing |",
+                           "| 2020-01-03 · P0-02 | SUPERSEDED by 2999-01-01: use floats for money | billing |",
+                           "| 2999-01-01 · P1-01 | Payments go through the ledger module | billing |")
+        out = self.c("brief-trim")
+        self.assertIn("moved 2 row(s)", out)
+        brief = (self.root / ".coniso" / "BRIEF.md").read_text(encoding="utf-8")
+        self.assertNotIn("use floats for money", brief)
+        self.assertIn("decisions --grep", brief)
+        out = self.c("decisions", "--grep", "billing")
+        self.assertIn("integer cents", out)                  # archived but still binding
+        self.assertIn("(archive)", out)
+        self.assertIn("ledger module", out)
+        self.assertIn("(brief)", out)
+        self.assertNotIn("floats", out)                      # superseded: must not reach a reviewer
+        self.assertIn("floats", self.c("decisions", "--all"))
+        self.assertIn("no matching decisions", self.c("decisions", "--grep", "nothing-like-this"))
+
+    # maps
+    def test_preflight_flags_old_maps_only(self):
+        maps = self.root / ".coniso" / "maps"
+        (maps / "auth.md").write_text("map\n", encoding="utf-8")
+        (maps / "decisions.md").write_text("| x | y | z |\n", encoding="utf-8")
+        old = MOD.dt.datetime(2000, 1, 1).timestamp()
+        for f in ("auth.md", "decisions.md"):
+            os.utime(maps / f, (old, old))
+        self.git("add", "-A")
+        out = self.c("preflight", code=None)
+        self.assertNotIn("auth.md", out)                      # 1 commit since: not stale
+        for i in range(MOD.MAP_STALE_COMMITS):
+            self.git("commit", "-q", "--allow-empty", "-m", f"c{i}")
+        out = self.c("preflight", code=None)
+        self.assertIn("auth.md (", out)
+        self.assertNotIn("decisions.md (", out)
+
+
 class Dispatch(Repo):
     tickets = (ticket("P1-01", accept=("a", "b", "c")), ticket("P1-02", deps=["P1-01"]), ticket("P1-03"),
                ticket("P1-04", size="L", model="opus", effort="high"))

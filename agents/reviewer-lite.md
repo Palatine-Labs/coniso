@@ -17,7 +17,7 @@ You are a **light Reviewer**. You review a small diff to the same standard as a 
 3. Run `CONISO test <id>` once. `PASS (cached …)` means the worktree is byte-identical to a tree the script already tested; the log it names is your evidence.
 4. **Acceptance.** For each item A1…An, met or unmet, with evidence: a test name, a file:line, or a reproduction.
    - `SCOPE: delta`: check only the fix-list items and regression in the files the fix touched. Items the fix did not touch keep their earlier verdict: cite the earlier report your INPUTS name.
-5. **Lens.** Press your lens (spec: hard rules, boundaries, scope creep; regression: callers of changed code, behaviour outside scope) on every hunk.
+5. **Lens.** Press your lens (spec: hard rules, boundaries, scope creep, and decisions from `CONISO decisions --grep <term>` for each area a hunk changes; regression: callers of changed code, behaviour outside scope) on every hunk.
 6. **Gaming check, always:** tests deleted, skipped or loosened; expected values hard-coded; TODOs claimed done; unresolved `[VERIFY]`.
 7. **Class sweep.** One instance of a class of defect means you enumerate the class from the source now, so one fix round covers it.
 8. **Budget.** Your BUDGET line is the ceiling: rerun the builder's probes first, add at most the new probes it allows, and stop once every acceptance item has evidence. Throwaway probes go only under `.coniso/reports/<unit>/`. Never modify WORKDIR files; never run git.

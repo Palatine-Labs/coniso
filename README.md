@@ -208,7 +208,9 @@ Being straight about this:
 | `quickfix <id> begin\|done --note …\|abort` | A bounded Director fix in a failed or passed ticket's worktree: sync and snapshot, then a size check (20 lines / 2 files), one check run, state `built` for a delta review; `abort` restores the builder's work |
 | `ledger add\|stats` | Auditor objection log |
 | `brief-trim [--before YYYY-MM-DD]` | Move Decisions log rows older than the current sprint out of the brief, into `.coniso/maps/decisions.md` |
-| `roadmap-sync`, `retro [--lessons]`, `close` | Write back, report (tokens per ticket and role, oversized feedback files; `--lessons` prints only the last Lessons), archive |
+| `decisions [--grep TERM] [--all]` | Search binding decisions in the brief and its archive; `SUPERSEDED` rows only with `--all` |
+| `lesson <spec> "<text>" [--source ID]`, `lesson <spec> --retire MATCH --by REASON` | Add a stamped lesson to `docs/agent-feedback/<spec>.md`, or retire one into `<spec>.retired.md` with a record |
+| `roadmap-sync`, `retro [--lessons [--sprints N]]`, `close` | Write back, report (tokens per ticket and role, oversized feedback files; `--lessons` prints the Lessons of the last N sprints that recorded any), archive |
 | `roadmap new\|show\|next\|validate\|extract\|write\|set\|log\|upgrade` | Roadmap file tools (work without `.coniso/`) |
 
 ## Stack packs
