@@ -597,6 +597,16 @@ class Contract(Repo):
             self.assertIn(need, matched, f"{need} not printed as the contract says:\n" + "\n".join(seen))
 
 
+class SkillSetup(unittest.TestCase):
+    def test_setup_compares_against_the_plugins_own_version_not_a_number(self):
+        # A number written into the skill went stale: dev.1 to dev.3 still said 1.2.0, so a 1.2.0 project that
+        # installed a dev release never re-ran init and kept its old script.
+        text = (PLUGIN / "skills" / "coniso" / "SKILL.md").read_text(encoding="utf-8")
+        setup = next(ln for ln in text.splitlines() if "`.coniso/VERSION` differs from" in ln)
+        self.assertNotRegex(setup, r"differs from \d+\.\d+")
+        self.assertIn("coniso.py\" version", setup)
+
+
 class MemorySources(Repo):
     tickets = (dict(ticket("P1-01"), prompt="Follow decision 0001 for every timestamp."), ticket("P1-02"))
 
