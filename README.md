@@ -71,7 +71,7 @@ claude plugin install coniso@coniso
 /plugin install coniso@coniso
 ```
 
-Pin a single pre-release with its tag instead, e.g. `Palatine-Labs/coniso#v1.3.0-dev.2`. Run `init` again in each project after updating so `.coniso/` picks up the new script and references.
+Pin a single pre-release with its tag instead, e.g. `Palatine-Labs/coniso#v1.3.0-dev.3`. Run `init` again in each project after updating so `.coniso/` picks up the new script and references.
 
 Install it from one source only. A copy added from Anthropic's directory on claude.ai appears in Claude Code as `coniso@synced`; if you also install `coniso@coniso`, disable one of them.
 
@@ -176,6 +176,14 @@ Being straight about this:
 - **Idle cost is small:** about 600 tokens per session while installed, whether or not you use it. The compaction hook prints nothing outside an active sprint.
 - **Rule of thumb:** use Coniso on a usage-based plan with headroom or an API budget you've set limits on. Watch your first sprint's usage before running unattended (`permissions --accept-edits`).
 
+## Projects with their own tools
+
+- **`.coniso/local/`** is yours: `init` (also when it upgrades Coniso) and `close` never write, move or delete anything in it. Put helper scripts and standing notes there.
+- **The contract.** `.coniso/ref/contract.md` lists the commands, printed markers (`RULED`, `RECORDED`, `MERGED`, `TEST <id>: PASS` …), exit codes and file locations that stay the same for all of major version 1. A local tool should rely on those and nothing else. A test checks the contract against the script.
+- **Upgrades keep your work.** `init` over an open sprint keeps the sprint, tickets, assignments, reports and your files, prints what it replaced, and keeps a locally patched script copy in `.coniso/backup/`.
+- **Your records, where they are.** `init --decisions-dir docs/decisions` reads a decision-record folder (one decision per file, superseded ones skipped, cited ones put on the ticket's assignment); `--house-rules` adds standing notes to every engineer's and reviewer's READ FIRST; `--lessons-dir` moves the lessons.
+- **A shared, heavy machine.** `--check-slots N` caps check runs across every agent (with `--check-pattern` for runs started by hand, `slot` for agents that start one), a land goes first and `--land-hold` keeps new runs out while it runs, `quiet` runs a timing command on a quiet machine, and `preflight` lists processes an earlier session left running.
+
 ## Hooks and output style
 
 - **Compaction hook.** Coniso ships one plugin hook (`hooks/hooks.json`): on `SessionStart` with matcher `compact`, it prints the open sprint board and the current wave, so a Director whose context was just compacted picks up from files instead of memory. In a project without an active sprint (`.coniso/sprint.json`) it prints nothing and exits 0. It runs `python3`, `python` or `py -3`, whichever works, through Claude Code's hook shell (Git Bash on Windows).
@@ -215,7 +223,10 @@ Being straight about this:
 | `review <ids> [--panel [ids]] [--delta] [--model opus] [--plan name] [--tokens N]` | Sync with main, measure the diff, reviewer assignments per review plan with a BUDGET sized to it (patch, batch and delta reviews go to `reviewer-lite`; an oversized patch is promoted), set reviewing, spawn lines |
 | `verdict <id[,id]> --report <file>` | Record a reviewer verdict; prints `RULED pass\|fail` when the rules settle it, `NEEDS RULING: <reason>` when a leader must |
 | `land <ids> [--tokens N] [--each] [--fresh]` | Merge passed tickets in dependency order, several as one batch with one integration run (falls back to one at a time on failure); roadmap-sync once their wave is clear; flags a restart point every 3 waves |
-| `quickfix <id> begin\|done --note …\|abort` | A bounded Director fix in a failed or passed ticket's worktree: sync and snapshot, then a size check (20 lines / 2 files), one check run, state `built` for a delta review; `abort` restores the builder's work |
+| `quickfix <id> begin\|done --note …\|abort` | A bounded Director fix in a built, failed or passed ticket's worktree: sync and snapshot, then a size check (20 lines / 2 files), one check run, state `built` for a delta review; `abort` restores the builder's work |
+| `slot [--now]` | For a check run started by hand: wait for a check slot (`GO`, `BUSY`, `QUIET`) |
+| `quiet --runs N [--out dir] [--cwd dir] -- <cmd>` | Timing runs: hold check runs, wait for a quiet machine, run N times, keep the busy-process list per run |
+| `land --recover` | Put the main checkout back after a land whose process died (the branch is never moved before a pass) |
 | `ledger add\|stats` | Auditor objection log |
 | `brief-trim [--before YYYY-MM-DD]` | Move Decisions log rows older than the current sprint out of the brief, into `.coniso/maps/decisions.md` |
 | `memory` | Health of lessons, decisions, retro lessons and maps, with issues to fix; run at setup and at phase gates |
@@ -240,7 +251,7 @@ Being straight about this:
 - **What it runs and touches:** your build and test commands, git (worktrees, branches, squash merges on your current branch), and its own files under `.coniso/` and `.git/info/exclude`. With your yes, it edits `.claude/settings.local.json`. Agents' own web lookups (scouts) go through Claude Code's tools. Coniso sends nothing anywhere itself.
 - **The merge gate checks the integrated code.** A ticket needs a passing review. Each merge then squashes it, runs your build and tests on the integrated result, and resets the branch untouched if anything fails or conflicts. Limits: with no build or test command set, preflight warns and the merge rests on review alone; `merge --force` and `--no-test` overrides exist (`--force` is reserved for your say-so); `--no-worktrees` mode has no merge gate; and it's a rule, not a lock, so an agent with shell access could still commit directly.
 - Worktrees live in `.coniso/wt/`. If a tool in your repo scans dot-folders (some eslint or jest setups), add `.coniso` to its ignore list.
-- Leave the main checkout alone during a sprint: merges need it clean.
+- Leave the main checkout alone during a sprint: merges need it clean. A land builds on a detached HEAD there and moves the branch only once its checks pass.
 - **Lessons loop:** when you critique an agent's work, a one-line lesson goes to `docs/agent-feedback/<specialty>.md`, and engineers read it before working.
 
 ## Contributing and security

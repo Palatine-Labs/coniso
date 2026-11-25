@@ -89,7 +89,7 @@ TESTS: <CONISO test result · log path>
 FIX LIST: .coniso/reports/<ticket>.fix.md   (fail only)
 RULING: <line printed by CONISO verdict>
 ```
-`CONISO verdict <id> --report <file>` parses this block. It voids a verdict that skips an acceptance item or gives one no evidence; any blocker or unmet item fails; minors never fail. It prints `RULED pass|fail` when those rules settle the round, and `NEEDS RULING: <reason>` for a panel split, a major, a void, or a reviewer verdict the rules contradict.
+`CONISO verdict <id> --report <file>` parses this block. It voids a verdict that skips an acceptance item or gives one no evidence; any blocker or unmet item fails; minors never fail. It prints `RULED pass|fail` when those rules settle the round (a pass that carries findings adds ` · WITH FIXES: <n> minor finding(s)`, and `land` repeats it), and `NEEDS RULING: <reason>` for a panel split, a major, a void, or a reviewer verdict the rules contradict.
 
 ## Fix list — `.coniso/reports/<ticket>.fix.md`
 Number each problem and give for each:

@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0-dev.3] - 2026-11-25
+
+Dev pre-release. Fixes the faults Project Sol's Director hit on 1.2.0 that dev.2 still had, and takes in what that project had to build for itself (a cap on check runs, a land's priority, quiet timing runs), so upgrading stops costing a project its own tools.
+
+### Fixed
+- **A command that passes its time limit is stopped with everything it started.** dev.2 killed one process: with a shell, that was the shell, and the check run under it kept going and held the output pipe open on Windows, so the call returned only when the grandchild ended and lost the output written before the limit. `run` now stops the whole tree (`taskkill /T` on Windows, the process group elsewhere) and keeps the output. Ported from Project Sol. A run that hits its limit is not rerun as flaky.
+- **`review <id> --model opus` writes an opus reviewer** on a sonnet ticket, in the assignment's first line and the spawn line. The flag reached only delta reviews.
+- **`verdict` rules a single reviewer's round** when the report says `R1` instead of `P2-03.R1`. dev.2 recorded the verdict under the short name and printed "waiting on" the real unit forever.
+- **Findings under a `## FINDINGS` heading are counted.** dev.2 read only a `FINDINGS:` line, so a pass-with-fixes report with three numbered minors ruled `RULED pass … m0`. A report with no findings section the parser knows has its tags counted wherever they are. A pass that carries findings now says `· WITH FIXES: <n> minor finding(s) to read before landing: <report>` in its `RULED` line, and `land` prints `WITH FIXES <id>` for it.
+- **A land never moves the branch before its checks pass.** A batch land used to commit its squashes on the branch and test them there, so a review opened during the land synced untested commits into its ticket. It now commits on a detached HEAD in the main checkout (build caches stay warm) and moves the branch only on a pass. One land at a time; a land whose process died is recovered by the next land or `land --recover`.
+- **`sync` refuses a ticket in review** (exit 8; `--force` when no reviewer is running). One left conflict markers under a running reviewer. `review` already had `--no-sync`.
+- **`quickfix` takes a `built` ticket.** Its first review then covers the fix; a ticket in review is still refused, with a message that says to wait for the verdict.
+
+### Added
+- **Check slots** (`init --check-slots N`): at most N check runs at once across every agent, claimed under a lock so waiting agents cannot all start together. `test` waits up to `check_slot_wait_seconds` (540) and then prints `TEST <id>: BUSY` (exit 9). `--check-pattern <regex>` also counts runs started by hand; `slot` is the wait for an agent that starts one. A land goes ahead of waiting tests and starts when `land_max_others` (1) runs are left; `--land-hold` keeps new runs out for its length. Off unless configured.
+- **`quiet --runs N -- <cmd>`**: timing runs on a quiet machine. It holds new check runs, waits for running ones, then for no busy process outside its own family (any program, not only builds: a stray `python -` counts), and keeps the busy list before and after each run; a disturbed run is not counted.
+- **`preflight` lists leftover processes**: build and tool processes whose parent is gone, usually left by an earlier session's agents. It never stops them.
+- **`--merge-timeout`** for a land's checks, **`--test-timeout`**, and **`--env KEY=VALUE`** for the environment checks need.
+- **A contract for local tools** (`.coniso/ref/contract.md`): the commands, printed markers, exit codes and file locations that stay the same within major version 1, checked by a test.
+- **`.coniso/local/`**, the project's own folder: `init` and `close` never touch it.
+- **Memory from the project's own records.** `--decisions-dir` reads a decision-record folder (one decision per file; `Status: Superseded` retires one; a ticket that cites `decision 0098` gets it on its DECISIONS line). `--house-rules` adds standing notes to every engineer's and reviewer's READ FIRST. `--lessons-dir` moves the per-specialty lessons.
+
+### Changed
+- **`init` over an open sprint says what it did**: what it replaced, what it kept (the sprint, tickets, assignments, reports and every file it did not install), and it keeps a script copy that differs from the new one in `.coniso/backup/`. A test upgrades a real 1.2.0 folder with a ticket in review and finishes the sprint on the new script.
+- New exit codes: 8 (something else holds it: a land, a quiet run, a ticket in review) and 9 (busy: run again).
+
 ## [1.3.0-dev.2] - 2026-11-24
 
 Dev pre-release. Fixes to 1.3.0-dev.1's pipeline checks and memory, found by probing them with ordinary code.
@@ -148,7 +174,8 @@ First public release.
 - **Engineer specialties.** builder, tester, ui, net, level, audio, docs, batch, artisan and synth, plus forging new specialties and a lessons loop (`docs/agent-feedback/`).
 - **Stack-pack mechanism** (`init --stack <name>`) for project-specific rules, specialties, checks, review lens and proving pass. No packs ship in 1.0.0.
 
-[Unreleased]: https://github.com/Palatine-Labs/coniso/compare/v1.3.0-dev.2...HEAD
+[Unreleased]: https://github.com/Palatine-Labs/coniso/compare/v1.3.0-dev.3...HEAD
+[1.3.0-dev.3]: https://github.com/Palatine-Labs/coniso/compare/v1.3.0-dev.2...v1.3.0-dev.3
 [1.3.0-dev.2]: https://github.com/Palatine-Labs/coniso/compare/v1.3.0-dev.1...v1.3.0-dev.2
 [1.3.0-dev.1]: https://github.com/Palatine-Labs/coniso/compare/v1.2.0...v1.3.0-dev.1
 [1.2.0]: https://github.com/Palatine-Labs/coniso/compare/v1.1.0...v1.2.0

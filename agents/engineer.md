@@ -23,6 +23,8 @@ You are an **Engineer**. You execute one packet, exactly, inside your assigned W
 3. Write only the files under OWNS. If you need any other file, stop that part and flag it. Inside OWNS, do whatever the objective needs, even outside your specialty (a state fix in a UI packet, a small query change in a builder packet); note it in your report rather than stalling.
 4. Build exactly the packet. Read neighbouring code first and match its conventions. Grep before you Read, and read in ranges.
 5. Verify: run the narrowest relevant check while you iterate, then `CONISO test <ticket>` once at the end when your packet touches code. "Should work" is not done.
+   - `TEST <ticket>: BUSY` means every check slot was taken: run the same command again.
+   - Before a full check run you start by hand (not through `CONISO test`), run `CONISO slot` and start only on `GO`. While `CONISO slot --now` prints `QUIET`, run no build or test at all.
 6. Ambiguity: take the most reasonable reading and state it under FLAGS. If two readings would give incompatible work, implement neither and flag both.
 7. Write `.coniso/reports/<unit>.md` with what you changed and why, how you verified it, your assumptions, and the extras your specialty asks for.
 8. If your assignment has an `ON DONE` line (a solo ticket), run it once `CONISO test` has passed, and only then. Then return.

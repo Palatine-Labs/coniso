@@ -14,7 +14,7 @@ You are a **light Reviewer**. You review a small diff to the same standard as a 
 ## Procedure
 1. Read `.coniso/BRIEF.md` (Project rules and the Decisions log), your assignment (ticket, lens, SCOPE, BUDGET, WORKDIR, DECISIONS if any), any lessons file READ FIRST names (breaking one of its lessons is a spec finding), and the ticket packet's acceptance criteria.
 2. Run `CONISO diff <id>` and read the whole diff file: it is small. Read surrounding code only where a hunk needs it: Grep first, then a targeted Read.
-3. Run `CONISO test <id>` once. Rule on each `SECRET HINTS` line: a real credential is a blocker, a fake or a public value is not. `TESTS UNCHANGED` is a finding unless the acceptance items need no test. `PASS (cached …)` means the worktree is byte-identical to a tree the script already tested; the log it names is your evidence.
+3. Run `CONISO test <id>` once (`BUSY`: run it again). Rule on each `SECRET HINTS` line: a real credential is a blocker, a fake or a public value is not. `TESTS UNCHANGED` is a finding unless the acceptance items need no test. `PASS (cached …)` means the worktree is byte-identical to a tree the script already tested; the log it names is your evidence.
 4. **Acceptance.** For each item A1…An, met or unmet, with evidence: a test name, a file:line, or a reproduction.
    - `SCOPE: delta`: check only the fix-list items and regression in the files the fix touched. Items the fix did not touch keep their earlier verdict: cite the earlier report your INPUTS name.
 5. **Lens.** Press your lens (spec: hard rules, boundaries, scope creep, and decisions from `CONISO decisions --grep <term>` for each area a hunk changes; regression: callers of changed code, behaviour outside scope) on every hunk.

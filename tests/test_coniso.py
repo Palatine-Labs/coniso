@@ -483,13 +483,13 @@ class Pipeline(Repo):
         self.c("init", "--format-check", self.writer("README.md"))
         self.build("P1-01", fname="a.txt", body="a\n")
         out = self.c("test", "P1-01")
-        self.assertIn("CHECKS MODIFIED FILES (warning): README.md", out)
+        self.assertIn("WARN: checks changed tracked files while they ran: README.md", out)
         self.assertNotIn("test_cache", self.sprint()["tickets"]["P1-01"])
 
     def test_ticket_test_does_not_warn_about_cache_files_the_checks_add(self):
         self.c("init", "--build", self.writer("build-output.txt"))
         self.build("P1-01", fname="a.txt", body="a\n")
-        self.assertNotIn("CHECKS MODIFIED FILES", self.c("test", "P1-01"))
+        self.assertNotIn("checks changed tracked files", self.c("test", "P1-01"))
 
     def test_real_failure_still_fails_after_rerun(self):
         self.c("init", "--test", f'"{PY}" -c "import sys; sys.exit(2)"')
@@ -1355,9 +1355,9 @@ class QuickFix(Repo):
 
     def test_refuses_the_wrong_state_a_missing_note_and_a_fix_never_opened(self):
         self.build("P1-01")
-        self.assertIn("P1-01 is built", self.c("quickfix", "P1-01", "begin", code=1))
-        self.assertIn("no open quick fix", self.c("quickfix", "P1-01", "done", "--note", "x", code=1))
         self.c("review", "P1-01")
+        self.assertIn("P1-01 is reviewing", self.c("quickfix", "P1-01", "begin", code=1))   # wait for its verdict
+        self.assertIn("no open quick fix", self.c("quickfix", "P1-01", "done", "--note", "x", code=1))
         rep = self.verdict_report("P1-01", "P1-01.R1", "pass", ["A1 met — out.txt:1", "A2 met — log"])
         self.c("verdict", "P1-01", "--report", str(rep))
         self.c("quickfix", "P1-01", "begin")                         # a passed ticket with minors to clear
