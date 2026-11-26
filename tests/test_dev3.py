@@ -1,4 +1,4 @@
-"""Tests for 1.3.0-dev.3: the faults Project Sol's Director hit on 1.2.0 and dev.2, check slots and quiet runs,
+"""Tests for 1.3.0-dev.3: the faults a live sprint's Director hit on 1.2.0 and dev.2, check slots and quiet runs,
 upgrades over an open sprint, the tool contract, and configurable memory sources.
 
 Run from the repo root:  python -m unittest discover -s tests -v
@@ -48,7 +48,7 @@ def orphan(code):
 
 # ---------------------------------------------------------------- Part 1, fault 1: the time limit
 class TimeLimit(unittest.TestCase):
-    """Project Sol's test_coniso_timeout.py, as unit tests. dev.2 failed 3 of these 8 checks."""
+    """A field project's timeout checks, as unit tests. dev.2 failed 3 of these 8 checks."""
 
     GRAND = 25     # seconds the grandchild sleeps: long enough to see whether it outlives the limit
 
@@ -595,6 +595,16 @@ class Contract(Repo):
         matched = {name for name, rx in regexes.items() for ln in seen if rx.search(ln)}
         for need in ("SPAWN", "TEST <id>: PASS", "REVIEWING", "RULED", "MERGED", "WAVE", "Now ready", "CONISO ERROR"):
             self.assertIn(need, matched, f"{need} not printed as the contract says:\n" + "\n".join(seen))
+
+
+class SkillSetup(unittest.TestCase):
+    def test_setup_compares_against_the_plugins_own_version_not_a_number(self):
+        # A number written into the skill went stale: dev.1 to dev.3 still said 1.2.0, so a 1.2.0 project that
+        # installed a dev release never re-ran init and kept its old script.
+        text = (PLUGIN / "skills" / "coniso" / "SKILL.md").read_text(encoding="utf-8")
+        setup = next(ln for ln in text.splitlines() if "`.coniso/VERSION` differs from" in ln)
+        self.assertNotRegex(setup, r"differs from \d+\.\d+")
+        self.assertIn("coniso.py\" version", setup)
 
 
 class MemorySources(Repo):

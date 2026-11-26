@@ -71,7 +71,7 @@ claude plugin install coniso@coniso
 /plugin install coniso@coniso
 ```
 
-Pin a single pre-release with its tag instead, e.g. `Palatine-Labs/coniso#v1.3.0-dev.3`. Run `init` again in each project after updating so `.coniso/` picks up the new script and references.
+Pin a single pre-release with its tag instead, e.g. `Palatine-Labs/coniso#v1.3.0-dev.4`. Run `init` again in each project after updating so `.coniso/` picks up the new script and references.
 
 Install it from one source only. A copy added from Anthropic's directory on claude.ai appears in Claude Code as `coniso@synced`; if you also install `coniso@coniso`, disable one of them.
 
@@ -243,7 +243,26 @@ Being straight about this:
 - `stack.json`, with optional `check_cmd`, `setup_cmd`, `build_cmd` and `review_lens`;
 - `proving.md`, a pass the Director runs after each wave.
 
-`{python}` and `{stack}` in commands expand to the interpreter and the installed pack folder. **Coniso ships no packs yet.** The mechanism is there for your own. Contributions are welcome.
+A pack's `stack.json` may also give defaults for `format_cmd`, `lint_cmd`, `typecheck_cmd` and `test_cmd`; a command you set yourself always wins. `{python}` and `{stack}` in commands expand to the interpreter and the installed pack folder. Coniso ships one pack, `rust`. The mechanism is there for your own; contributions are welcome.
+
+### The `rust` pack
+
+`init --stack rust` tunes a sprint for a Cargo workspace. It needs `cargo`, clippy and rustfmt; it uses `cargo-nextest`, `sccache`, `cargo-audit` and `cargo-machete` when they are installed. Its helper is `.coniso/stack/rustkit.py` (standard library only):
+
+| Command | What it does |
+|---|---|
+| `doctor [--apply]` | Lists the tools it found and sizes check slots, build jobs and a shared build cache to three quarters of the machine, 16 cores at most |
+| `gate` | Runs first in every check. Blocks `dbg!`, `todo!`, `unimplemented!` and `unsafe` without a `// SAFETY:` comment on added lines, checks formatting, and prints `RUST HINTS` (`unwrap`, `#[allow]`, `#[ignore]`, sleeps in tests) for the reviewer |
+| `test` | A ticket runs the crates it changed and the crates that depend on them; a merge runs the whole workspace |
+| `test-audit [--log FILE]` | Reports duplicate tests, tests that differ only in their values, tests that assert nothing, ignored and sleeping tests, and the slowest tests in a log. Never edits |
+| `arch [--init]` | `rust-arch.json`: crate layers, a file size limit, the crates allowed to hold `unsafe`, the hot crates whose added allocations get a hint, and the interface crates whose public changes get one. `--init` writes it from the code as it is, so nothing fails on day one |
+| `wave` | Open tickets of one wave that name the same crate. A ticket names its crates with a `CRATES: a, b` line in its roadmap prompt; the gate then blocks a change outside them |
+| `bench [-p CRATE] [--save]` | Runs the benchmarks (built-in harness or criterion) against a saved baseline and fails when one is over 10% slower |
+| `twice [--file F] -- CMD` | Runs a command twice and compares its output and files: a determinism check |
+| `deps` | Duplicate versions, advisories and unused dependencies in a few lines |
+| `trim` | Deletes the shared build cache when it is over its size limit |
+
+The pack adds two specialties (`rust`, `rust-test`), a `rust` review lens, a proving pass after each wave (test audit, `sweep`, cache trim) and a research guide that tries cargo's own tools before spending a scout. `stacks/rust/architecture.md` gives the conditions that keep an agent-built workspace fast as it grows. The scoped test run and the audit are heuristics: the merge gate still runs every test, and the audit only suggests.
 
 ## Guarantees and notes
 

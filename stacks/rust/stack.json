@@ -1,0 +1,8 @@
+{
+  "name": "rust",
+  "format_cmd": "{python} {stack}/rustkit.py gate",
+  "lint_cmd": "cargo clippy --workspace --all-targets --quiet -- -D warnings",
+  "test_cmd": "{python} {stack}/rustkit.py test",
+  "watch_cmd_pattern": "[\\\\/]target[^ \"]*[\\\\/](debug|release)[\\\\/]",
+  "review_lens": "rust"
+}
