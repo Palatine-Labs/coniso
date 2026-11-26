@@ -19,7 +19,7 @@ import tempfile
 import time
 from pathlib import Path
 
-VERSION = "1.3.0-dev.3"
+VERSION = "1.3.0-dev.4"
 STATES = ["queued", "building", "built", "reviewing", "passed", "failed",
           "conflict", "merged", "blocked", "dropped"]
 ACTIVE = {"building", "built", "reviewing", "passed", "failed", "conflict"}
@@ -43,7 +43,7 @@ def kill_tree(proc):
     `Popen.kill()` stops one process. With `shell=True` that one process is the shell, and what the shell started
     (a check run and its compilers) keeps running with nobody reading its result: on Windows it also keeps the output
     pipe open, so the caller hangs until it ends. Here the whole tree goes: `taskkill /T /F` on Windows, the process
-    group elsewhere (`run_limited` starts the command in a group of its own). Ported from Project Sol's fix."""
+    group elsewhere (`run_limited` starts the command in a group of its own)."""
     if os.name == "nt":
         try:
             subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True, timeout=60)
@@ -602,6 +602,11 @@ def install_stack(name, conf, a, plugin):
         conf["setup_cmd"] = fill(pack["setup_cmd"])
     if pack.get("build_cmd") and not conf.get("build_cmd"):
         conf["build_cmd"] = fill(pack["build_cmd"])
+    # A pack may also offer defaults for the other checks and for process watching. Yours always win: a default is
+    # used only where the config has nothing, and `init --test ''` (an empty value) still clears one.
+    for key in ("format_cmd", "lint_cmd", "typecheck_cmd", "test_cmd", "watch_cmd_pattern"):
+        if pack.get(key) and key not in conf:
+            conf[key] = fill(pack[key])
 
 
 def write_stack_brief(name, conf, brief):
@@ -795,7 +800,7 @@ def cmd_init(a):
 # Everything else in .coniso/ is the project's: init and close leave it where it is.
 CONISO_OWNED = {"coniso.py", "VERSION", "config.json", "BRIEF.md", "sprint.json", "ledger.jsonl", "RETRO.md",
                 "flaky.jsonl", "landing.json", ".lock", "tickets", "assignments", "reports", "maps", "specialties",
-                "ref", "wt", "archive", "stack", "slots", "backup", "local", "__pycache__"}
+                "ref", "wt", "archive", "stack", "slots", "backup", "local", "cache", "__pycache__"}
 LOCAL_README = """# .coniso/local
 
 Your project's own scripts and notes for Coniso: helper tools, standing notes for agents, anything Coniso should
@@ -2067,7 +2072,7 @@ def cmd_sync(a):
 
 
 # ---------------------------------------------------------------- check slots, quiet runs, leftover processes
-# A check run can need most of a machine (Project Sol: up to 8 GB and every core for 25 to 45 minutes). These keep
+# A check run can need most of a machine (one field project: gigabytes of memory and every core for tens of minutes). These keep
 # the runs within a cap, let a land go first, hold the machine still for timing runs, and show what an earlier
 # session left running. All of it is off until config turns it on (check_slots, check_process_pattern, land_hold).
 
@@ -2478,7 +2483,7 @@ def cmd_quiet(a):
     sys.exit(code)
 
 
-def stray_processes(conf):
+def stray_processes(conf, raw=False):
     """Build, test and tool processes whose parent is gone: usually left by an agent of an earlier session (a check run
     whose agent stopped, a `python -` waiting on input). Names come from config watch_processes ("" turns it off);
     anything matching check_process_pattern counts too. Lists only; never stops anything."""
@@ -2491,16 +2496,49 @@ def stray_processes(conf):
     names = re.compile(pat)
     min_age = float(conf.get("stray_min_age_seconds", 60))
     runs = re.compile(conf["check_process_pattern"], re.I) if conf.get("check_process_pattern") else None
+    paths = re.compile(conf["watch_cmd_pattern"], re.I) if conf.get("watch_cmd_pattern") else None
     now, out = time.time(), []
     for pr in procs:
         if pr["pid"] in mine or pr["ppid"] in pids or (pr["start"] and now - pr["start"] < min_age):
             continue
         if (pr["name"] or "").lower() == "msbuild.exe" and "nodereuse:true" in (pr["cmd"] or "").lower():
             continue      # an idle MSBuild helper node: left running by design
-        if names.search(pr["name"] or "") or (runs and runs.search(pr["cmd"] or "")):
+        if (names.search(pr["name"] or "") or (runs and runs.search(pr["cmd"] or ""))
+                or (paths and paths.search(pr["cmd"] or ""))):
             age = f"{int((now - pr['start']) // 60)} min" if pr["start"] else "age unknown"
-            out.append(f"pid {pr['pid']} {pr['name']} ({age}, parent gone): {(pr['cmd'] or '')[-90:]}")
+            text = f"pid {pr['pid']} {pr['name']} ({age}, parent gone): {(pr['cmd'] or '')[-90:]}"
+            out.append((pr["pid"], text) if raw else text)
     return out
+
+
+def cmd_sweep(a):
+    """List the processes preflight calls leftovers (a watched build, test or tool process whose parent is gone and
+    that is older than stray_min_age_seconds). With --stop, stop each one and everything it started. A process with a
+    living parent is never touched, so a running agent's check run is safe; one started by hand in a terminal that
+    was closed is not, which is why stopping is a flag and not the default."""
+    conf = cfg()
+    strays = stray_processes(conf, raw=True)
+    if not strays:
+        print("SWEEP nothing left running")
+        return
+    stopped = 0
+    for pid, text in strays:
+        if a.stop:
+            if os.name == "nt":
+                r = subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)], capture_output=True)
+                ok = r.returncode == 0
+            else:
+                try:
+                    os.kill(pid, 9)
+                    ok = True
+                except OSError:
+                    ok = False
+            stopped += ok
+            print(f"  {'stopped' if ok else 'could not stop'} {text}")
+        else:
+            print(f"  {text}")
+    print(f"SWEEP {stopped} of {len(strays)} leftover process(es) stopped" if a.stop else
+          f"SWEEP {len(strays)} leftover process(es) · `sweep --stop` stops them and what they started")
 
 
 LANDING = "landing.json"
@@ -4689,6 +4727,10 @@ def main():
     s = sp.add_parser("slot", help="wait for a check slot before a check run started by hand (GO / BUSY / QUIET)")
     s.add_argument("--now", action="store_true", help="report once and return; take no slot")
     s.set_defaults(fn=cmd_slot)
+
+    s = sp.add_parser("sweep", help="list processes left running with no parent; --stop stops them")
+    s.add_argument("--stop", action="store_true", help="stop each leftover process and everything it started")
+    s.set_defaults(fn=cmd_sweep)
 
     s = sp.add_parser("quiet", help="timing runs on a quiet machine: hold check runs, wait for quiet, run N times")
     s.add_argument("--runs", type=int, default=3)

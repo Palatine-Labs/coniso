@@ -7,12 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.3.0-dev.3] - 2026-11-25
+## [1.3.0-dev.4] - 2026-11-25
 
-Dev pre-release. Fixes the faults Project Sol's Director hit on 1.2.0 that dev.2 still had, and takes in what that project had to build for itself (a cap on check runs, a land's priority, quiet timing runs), so upgrading stops costing a project its own tools.
+Dev pre-release. The first stack pack, for Rust: checks that know a Cargo workspace, so agents wait less on tests and reviewers see what a Rust reviewer looks for. Nothing changes for a project that does not install it.
+
+### Added
+- **The `rust` stack pack** (`init --stack rust`), the first pack Coniso ships. Its helper `rustkit.py` scopes a ticket's test run to the crates it changed and their dependents (the merge still runs the workspace), gates added lines (`dbg!`, `todo!`, `unsafe` without `// SAFETY:`, format) before anything compiles, audits tests for duplicates and other dead weight, checks an architecture file (`rust-arch.json`: crate layers, file size limit, where `unsafe` may live, hot and interface crates), holds a ticket to the crates its packet names (`CRATES: a, b`) and shows two tickets of a wave that share one (`wave`), compares benchmarks with a saved baseline (`bench`), runs a command twice to prove it repeats (`twice`), reports dependency health, and sizes check slots and build jobs to a modest share of the machine. It adds `rust` and `rust-test` specialties, a `rust` review lens, a proving pass and a research guide. See README → The `rust` pack.
+- **`sweep [--stop]`** lists the leftover processes `preflight` reports and, with `--stop`, stops each one and what it started. A process with a living parent is never touched. Config `watch_cmd_pattern` adds processes by command line (the rust pack uses it for test binaries under `target/`).
+- A stack pack can give defaults for `format_cmd`, `lint_cmd`, `typecheck_cmd` and `test_cmd`. A command you set, or cleared with `''`, wins.
+- A test that fails if a tracked file names a private project, a home folder path or a personal mail address.
 
 ### Fixed
-- **A command that passes its time limit is stopped with everything it started.** dev.2 killed one process: with a shell, that was the shell, and the check run under it kept going and held the output pipe open on Windows, so the call returned only when the grandchild ended and lost the output written before the limit. `run` now stops the whole tree (`taskkill /T` on Windows, the process group elsewhere) and keeps the output. Ported from Project Sol. A run that hits its limit is not rerun as flaky.
+- **Setup runs `init` again after a plugin update.** The skill compared `.coniso/VERSION` with a number written into it, which still said 1.2.0 in dev.1 to dev.3, so a 1.2.0 project that installed a dev release kept its old script. It now compares with what the plugin's `coniso.py version` prints.
+
+### Changed
+- `.coniso/cache/` is Coniso's (the rust pack's shared build cache); `init` no longer lists it among your files.
+
+## [1.3.0-dev.3] - 2026-11-25
+
+Dev pre-release. Fixes the faults a live sprint's Director hit on 1.2.0 that dev.2 still had, and takes in what that project had to build for itself (a cap on check runs, a land's priority, quiet timing runs), so upgrading stops costing a project its own tools.
+
+### Fixed
+- **A command that passes its time limit is stopped with everything it started.** dev.2 killed one process: with a shell, that was the shell, and the check run under it kept going and held the output pipe open on Windows, so the call returned only when the grandchild ended and lost the output written before the limit. `run` now stops the whole tree (`taskkill /T` on Windows, the process group elsewhere) and keeps the output. A run that hits its limit is not rerun as flaky.
 - **`review <id> --model opus` writes an opus reviewer** on a sonnet ticket, in the assignment's first line and the spawn line. The flag reached only delta reviews.
 - **`verdict` rules a single reviewer's round** when the report says `R1` instead of `P2-03.R1`. dev.2 recorded the verdict under the short name and printed "waiting on" the real unit forever.
 - **Findings under a `## FINDINGS` heading are counted.** dev.2 read only a `FINDINGS:` line, so a pass-with-fixes report with three numbered minors ruled `RULED pass … m0`. A report with no findings section the parser knows has its tags counted wherever they are. A pass that carries findings now says `· WITH FIXES: <n> minor finding(s) to read before landing: <report>` in its `RULED` line, and `land` prints `WITH FIXES <id>` for it.
@@ -174,7 +190,8 @@ First public release.
 - **Engineer specialties.** builder, tester, ui, net, level, audio, docs, batch, artisan and synth, plus forging new specialties and a lessons loop (`docs/agent-feedback/`).
 - **Stack-pack mechanism** (`init --stack <name>`) for project-specific rules, specialties, checks, review lens and proving pass. No packs ship in 1.0.0.
 
-[Unreleased]: https://github.com/Palatine-Labs/coniso/compare/v1.3.0-dev.3...HEAD
+[Unreleased]: https://github.com/Palatine-Labs/coniso/compare/v1.3.0-dev.4...HEAD
+[1.3.0-dev.4]: https://github.com/Palatine-Labs/coniso/compare/v1.3.0-dev.3...v1.3.0-dev.4
 [1.3.0-dev.3]: https://github.com/Palatine-Labs/coniso/compare/v1.3.0-dev.2...v1.3.0-dev.3
 [1.3.0-dev.2]: https://github.com/Palatine-Labs/coniso/compare/v1.3.0-dev.1...v1.3.0-dev.2
 [1.3.0-dev.1]: https://github.com/Palatine-Labs/coniso/compare/v1.2.0...v1.3.0-dev.1

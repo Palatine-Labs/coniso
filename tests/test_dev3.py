@@ -1,4 +1,4 @@
-"""Tests for 1.3.0-dev.3: the faults Project Sol's Director hit on 1.2.0 and dev.2, check slots and quiet runs,
+"""Tests for 1.3.0-dev.3: the faults a live sprint's Director hit on 1.2.0 and dev.2, check slots and quiet runs,
 upgrades over an open sprint, the tool contract, and configurable memory sources.
 
 Run from the repo root:  python -m unittest discover -s tests -v
@@ -48,7 +48,7 @@ def orphan(code):
 
 # ---------------------------------------------------------------- Part 1, fault 1: the time limit
 class TimeLimit(unittest.TestCase):
-    """Project Sol's test_coniso_timeout.py, as unit tests. dev.2 failed 3 of these 8 checks."""
+    """A field project's timeout checks, as unit tests. dev.2 failed 3 of these 8 checks."""
 
     GRAND = 25     # seconds the grandchild sleeps: long enough to see whether it outlives the limit
 
